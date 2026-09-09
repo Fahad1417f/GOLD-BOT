@@ -1,0 +1,17 @@
+{
+  "tradingview_control": {
+    "enabled": true,
+    "backend": "playwright_cdp",
+    "chart_only": true,
+    "allow_navigation": false,
+    "allow_tab_switching": false,
+    "allow_order_clicks": false,
+    "verify_every_action": true,
+    "chart_point": [700, 450],
+    "cdp_url_env": "TRADINGVIEW_CDP_URL"
+  },
+  "demo_trading": {
+    "enabled": false,
+    "base_url": "https://testnet.binancefuture.com"
+  }
+}
