@@ -1,0 +1,16 @@
+{
+  "agent_status":"OFFLINE",
+  "execution":"OFF",
+  "symbol":"XAUUSD",
+  "timeframe":"15m",
+  "direction":"neutral",
+  "confidence":0,
+  "level":"WAIT",
+  "score":0,
+  "gravity":{"4h":"unknown","1h":"unknown"},
+  "timing":{"5m":"unknown","3m":"unknown"},
+  "kfoo":{"table":"—","tf_agg":"—","ind_agg":"—","active":"—","score":"—","indicators":{}},
+  "reasons":[],
+  "updated_at":0,
+  "source":"GOLD-BOT V56 local agent -> GitHub state bridge"
+}
