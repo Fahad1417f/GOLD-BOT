@@ -1,0 +1,1 @@
+document.getElementById("time").textContent=new Date().toLocaleTimeString("ar-SA",{hour:"2-digit",minute:"2-digit"});
