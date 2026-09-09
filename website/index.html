@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>GOLD-BOT Control Center</title><link rel="stylesheet" href="style.css"></head>
+<body>
+<header><div><h1>GOLD-BOT</h1><p>لوحة مراقبة الوكيل</p></div><span class="badge">EXECUTION OFF</span></header>
+<main>
+<section class="grid">
+<article><h2>حالة الوكيل</h2><div id="agent" class="value">جاهز للمراقبة</div></article>
+<article><h2>TradingView</h2><div id="tv" class="value">Chart-only</div><small>Navigation / Tab switching / Orders: BLOCKED</small></article>
+<article><h2>KFOO</h2><div class="value">4H + 1H → 15M → 5M + 3M</div><small>2M: EXCLUDED</small></article>
+<article><h2>Telegram</h2><div class="value">Allowlist only</div><small>/status /health /test /log /stop</small></article>
+</section>
+<section class="panel"><h2>معلومات النظام</h2><pre id="status">لا توجد قراءة حية حتى يتم ربط Backend الوكيل.</pre></section>
+</main>
+<footer>GOLD-BOT • Monitoring UI • No secrets stored in frontend</footer>
+<script src="app.js"></script>
+</body></html>
