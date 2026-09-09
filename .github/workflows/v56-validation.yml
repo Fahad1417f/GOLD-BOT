@@ -1,0 +1,17 @@
+name: GOLD-BOT validation
+
+on:
+  push:
+    branches: ["main", "v56-auto-healing-development"]
+  pull_request:
+    branches: ["main"]
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile Python
+        run: python -m compileall -q v56_signal_monitor
+      - name: Run self-healing unit tests
+        run: python -m unittest discover -s v56_signal_monitor -p "test_*.py" -v
