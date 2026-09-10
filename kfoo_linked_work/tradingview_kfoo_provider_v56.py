@@ -64,9 +64,47 @@ def validate(payload: Any) -> tuple[dict[str, dict], dict[str, Any]]:
     return analysis, timing
 
 
+def _read_dom_bridge(page) -> Any:
+    """Read an explicitly published KFOO bridge from the live TradingView DOM.
+
+    The bridge is deliberately narrow: it only accepts JSON published by the
+    chart page itself under a data attribute or a script tag. It does not OCR,
+    infer direction from pixels/colors, or manufacture missing values.
+    """
+    return page.evaluate(
+        r"""() => {
+          const nodes = [
+            ...document.querySelectorAll('[data-goldbot-kfoo]'),
+            ...document.querySelectorAll('script[type="application/json"][data-goldbot-kfoo]')
+          ];
+          for (const n of nodes) {
+            const raw = n.getAttribute('data-goldbot-kfoo') || n.textContent || '';
+            if (!raw.trim()) continue;
+            try { return JSON.parse(raw); } catch (_) {}
+          }
+          return null;
+        }"""
+    )
+
+
 def read_from_page(page) -> tuple[dict[str, dict], dict[str, Any]]:
     try:
         payload = page.evaluate(f"() => window.{PROVIDER} || null")
     except Exception as exc:
         raise RuntimeError(f"LIVE_KFOO_PROVIDER_READ_FAILED:{type(exc).__name__}:{exc}") from exc
+
+    if payload is not None:
+        return validate(payload)
+
+    try:
+        payload = _read_dom_bridge(page)
+    except Exception as exc:
+        raise RuntimeError(f"LIVE_KFOO_DOM_BRIDGE_READ_FAILED:{type(exc).__name__}:{exc}") from exc
+
+    if payload is None:
+        raise RuntimeError(
+            "LIVE_KFOO_INPUT_NOT_CONFIGURED:"
+            "TradingView page exposes neither window.__GOLDBOT_KFOO__ "
+            "nor a data-goldbot-kfoo JSON bridge"
+        )
     return validate(payload)
