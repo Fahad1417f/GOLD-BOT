@@ -64,7 +64,7 @@ def runtime_health(t):
     checks={}
     for key in ("CAPTURE_15M","ANALYSIS_15M","FRAME_15M_CAPTURE","FRAME_15M_VERIFY",
                 "FRAME_1H_CAPTURE","FRAME_1H_VERIFY","FRAME_4H_CAPTURE","FRAME_4H_VERIFY"):
-        checks[key]=latest(t,rf"{re.escape(key)}=([^\\s]+)","WAIT")
+        checks[key]=latest(t,rf"{re.escape(key)}=([^\s]+)","WAIT")
     vision_pass = all(v.upper()=="PASS" for k,v in checks.items()
                       if k.startswith(("CAPTURE_15M","ANALYSIS_15M","FRAME_15M_")))
     errors = list(re.finditer(r"(?i)(Traceback|TypeError|ModuleNotFoundError|ConnectionError|ConnectionRefusedError)", t))
