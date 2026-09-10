@@ -79,12 +79,21 @@ def main() -> int:
         return 4
     emit(f"HNS=PASS aligned={hns.get('aligned')} direction={hns.get('direction')}")
 
-    analysis, timing = load_kfoo()
-    if analysis is None:
-        emit("KFOO_SOURCE=FAIL LIVE_KFOO_INPUT_NOT_CONFIGURED")
-        emit("KFOO_MARKERS=NOT_PUBLISHED_SYNTHETIC_DATA_FORBIDDEN")
-        emit("V56_READONLY=FAIL KFOO_SOURCE_NOT_CONFIGURED")
-        return 5
+    # Prefer the live, explicitly verified provider exposed by the TradingView
+    # page. Environment JSON remains available only as an upstream integration
+    # fallback and is never synthesized by this process.
+    try:
+        analysis, timing = reader.read_live_kfoo()
+        emit("KFOO_SOURCE=TRADINGVIEW_LIVE_PROVIDER")
+    except Exception as live_exc:
+        analysis, timing = load_kfoo()
+        if analysis is None:
+            emit("KFOO_SOURCE=FAIL " + str(live_exc))
+            emit("KFOO_MARKERS=NOT_PUBLISHED_SYNTHETIC_DATA_FORBIDDEN")
+            emit("V56_READONLY=FAIL KFOO_SOURCE_NOT_CONFIGURED")
+            return 5
+        emit("KFOO_SOURCE=VERIFIED_UPSTREAM_INPUT")
+        emit("KFOO_LIVE_PROVIDER=UNAVAILABLE reason=" + type(live_exc).__name__)
 
     from signal_engine_v56 import promote
     sig = promote(analysis, timing=timing, verified_hns_mtf=hns)
