@@ -142,7 +142,11 @@ class PlaywrightChartReader:
     @staticmethod
     def _parse_metadata(title: str, text: str, page=None):
         """Parse TradingView metadata without treating the timeframe menu as truth."""
-        symbol, timeframe = PlaywrightChartReader._parse_title(title)
+        symbol, title_timeframe = PlaywrightChartReader._parse_title(title)
+        # The TradingView title can contain a range/interval token that is not
+        # the active chart interval. Prefer explicit selected-interval DOM
+        # evidence; use the title only as a last-resort fallback.
+        timeframe = None
         body = text or ""
 
         upper = body.upper()
@@ -154,8 +158,11 @@ class PlaywrightChartReader:
             elif re.search(r"\bXAUUSD\b", upper):
                 symbol = "XAU/USD"
 
-        if timeframe is None and page is not None:
+        if page is not None:
             timeframe = PlaywrightChartReader._read_selected_timeframe(page)
+
+        if timeframe is None:
+            timeframe = title_timeframe
 
         if timeframe is None:
             matches = re.findall(r"(?<![\w])(?:1m|3m|5m|15m|30m|45m|1h|2h|4h|6h|12h|1d|1w)(?![\w])", body.lower())
