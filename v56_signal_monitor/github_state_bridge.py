@@ -19,6 +19,11 @@ try:
     from virtual_trade_tracker import run as update_virtual_trades
 except Exception:
     update_virtual_trades=None
+try:
+    from candle_clock import parse_kfoo_candle_clock, parse_legacy_leader_remaining
+except Exception:
+    parse_kfoo_candle_clock=None
+    parse_legacy_leader_remaining=None
 MIN_PUBLISH=float(os.getenv("GOLDBOT_MIN_PUBLISH_SECONDS","20"))
 API=f"https://api.github.com/repos/{REPO}/contents/{STATE_PATH}"
 last_hash=""; last_push=0.0
@@ -38,11 +43,27 @@ def latest(t,pattern,default="unknown"):
     m=list(re.finditer(pattern,t,re.I|re.M))
     return m[-1].group(1).strip() if m else default
 
+def parse_clock_state(t):
+    result={}
+    for tf in ("15m","3m"):
+        c=parse_kfoo_candle_clock(t,tf) if parse_kfoo_candle_clock else None
+        if c is None and tf=="15m" and parse_legacy_leader_remaining:
+            c=parse_legacy_leader_remaining(t)
+        result[tf]={
+            "remaining_seconds":c.remaining_seconds if c else None,
+            "remaining_hms":c.remaining_hms if c else None,
+            "raw":c.raw if c else None,
+            "source":c.source if c else "WAIT",
+            "closed":bool(c.closed) if c else False,
+        }
+    return result
+
 def parse_log(t):
     s={"agent_status":"ONLINE","execution":"OFF","symbol":"XAUUSD","timeframe":"15m",
        "direction":latest(t,r"DIRECTION_15M=([^\s]+)","neutral"),"confidence":0,"level":"WAIT","score":0,
        "gravity":{"4h":latest(t,r"DIRECTION_4H=([^\s]+)","unknown"),"1h":latest(t,r"DIRECTION_1H=([^\s]+)","unknown")},
        "timing":{"5m":latest(t,r"DIRECTION_5M=([^\s]+)","unknown"),"3m":latest(t,r"DIRECTION_3M=([^\s]+)","unknown")},
+       "candle_clock":parse_clock_state(t),
        "kfoo":{"table":"—","tf_agg":latest(t,r"KFOO_TF_AGG_15M=([^\r\n]+)","—"),"ind_agg":latest(t,r"KFOO_IND_AGG_15M=([^\r\n]+)","—"),"active":latest(t,r"KFOO_ACTIVE_15M=([^\s]+)","—"),"score":"—","indicators":{}},
        "reasons":[],"updated_at":time.time(),"source":"GOLD-BOT V56 local agent -> GitHub state bridge"}
     if re.search(r"KFOO_TABLE_(4H|1H|15M)=PASS",t,re.I): s["kfoo"]["table"]="PASS"
@@ -65,8 +86,7 @@ def merge_supervisor(state):
         state["development"]=sup.get("development","WATCHING")
         state["supervisor_updated_at"]=sup.get("updated_at")
         if sup.get("status")!="RUNNING":
-            state["agent_status"]="DEGRADED"
-            state["level"]="WAIT"
+            state["agent_status"]="DEGRADED"; state["level"]="WAIT"
             state["reasons"].insert(0,"SUPERVISOR="+str(sup.get("status")))
     except Exception:
         state["supervisor_status"]="UNKNOWN"
@@ -93,10 +113,8 @@ def main():
                     state=merge_supervisor(parse_log(t))
                     if update_virtual_trades:
                         try:
-                            vt=update_virtual_trades()
-                            state["virtual_trades"]=vt
-                        except Exception as e:
-                            state["virtual_trades_error"]=type(e).__name__+":"+str(e)
+                            vt=update_virtual_trades(); state["virtual_trades"]=vt
+                        except Exception as e: state["virtual_trades_error"]=type(e).__name__+":"+str(e)
                     publish(state)
         except Exception as e: print("GITHUB_STATE_ERROR="+type(e).__name__+":"+str(e),flush=True)
         time.sleep(INTERVAL)
