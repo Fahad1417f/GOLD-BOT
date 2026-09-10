@@ -2,10 +2,9 @@ from __future__ import annotations
 
 import json
 import os
-import time
+import re
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any
 
 try:
     from playwright.sync_api import sync_playwright
@@ -70,7 +69,7 @@ class PlaywrightChartReader:
             title = self.page.title()
             url = self.page.url
             text = self.page.locator("body").inner_text(timeout=1500)[:20000]
-            symbol, timeframe = self._parse_title(title)
+            symbol, timeframe = self._parse_metadata(title, text, self.page)
             candles = self._read_verified_candles()
             return ChartRead(
                 connected=True,
@@ -97,12 +96,6 @@ class PlaywrightChartReader:
         return str(path)
 
     def _read_verified_candles(self) -> list[dict[str, float]] | None:
-        """Read only an explicitly exposed candle provider.
-
-        Supported provider contract: window.__GOLDBOT_CANDLES__ is an array of
-        objects containing open/high/low/close and optional time. This keeps
-        OHLC provenance explicit and prevents unsafe inference from pixels.
-        """
         try:
             raw = self.page.evaluate("() => window.__GOLDBOT_CANDLES__ || null")
             if not isinstance(raw, list) or len(raw) < 9:
@@ -120,15 +113,83 @@ class PlaywrightChartReader:
             return None
 
     @staticmethod
+    def _parse_metadata(title: str, text: str, page=None):
+        """Parse TradingView metadata from title first, then visible DOM text.
+
+        TradingView commonly exposes titles such as ``XAUUSD 4,411`` while
+        the visible chart identifies the instrument as ``Gold Spot / U.S.
+        Dollar``. Timeframe buttons are inspected for an explicitly selected
+        state before falling back to a conservative visible-text heuristic.
+        """
+        symbol, timeframe = PlaywrightChartReader._parse_title(title)
+        body = text or ""
+
+        upper = body.upper()
+        if symbol is None:
+            if "GOLD SPOT / U.S. DOLLAR" in upper or "GOLD SPOT/U.S. DOLLAR" in upper:
+                symbol = "XAU/USD"
+            elif re.search(r"\bXAU\s*/?\s*USD\b", upper):
+                symbol = "XAU/USD"
+            elif re.search(r"\bXAUUSD\b", upper):
+                symbol = "XAU/USD"
+
+        if timeframe is None and page is not None:
+            timeframe = PlaywrightChartReader._read_selected_timeframe(page)
+
+        if timeframe is None:
+            # Only accept an unambiguous standalone timeframe token. This is
+            # deliberately conservative because the body also contains the
+            # full list of timeframe buttons.
+            matches = re.findall(r"(?<![\w])(?:1m|3m|5m|15m|30m|45m|1h|2h|4h|6h|12h|1d|1w)(?![\w])", body.lower())
+            if len(set(matches)) == 1:
+                timeframe = matches[0]
+
+        return symbol, timeframe
+
+    @staticmethod
+    def _read_selected_timeframe(page):
+        """Find a selected TradingView timeframe control when exposed by DOM."""
+        try:
+            values = page.evaluate(
+                """() => {
+                    const nodes = Array.from(document.querySelectorAll(
+                      '[aria-selected="true"], [aria-pressed="true"], [data-value]'
+                    ));
+                    const out = [];
+                    const re = /^(1m|3m|5m|15m|30m|45m|1h|2h|4h|6h|12h|1d|1w)$/i;
+                    for (const n of nodes) {
+                      const candidates = [n.getAttribute('data-value'), n.getAttribute('aria-label'), n.getAttribute('title'), n.textContent];
+                      for (const v of candidates) {
+                        const s = (v || '').trim();
+                        const m = s.match(re) || s.match(/^(1|3|5|15|30|45)\s*(min|minutes)$/i) || s.match(/^(1|2|4|6|12)\s*(h|hour|hours)$/i);
+                        if (m) out.push(s.toLowerCase());
+                      }
+                    }
+                    return out;
+                }"""
+            )
+            for value in values or []:
+                v = str(value).lower().strip()
+                v = re.sub(r"\s*(minutes|min)$", "m", v)
+                v = re.sub(r"\s*(hours|hour)$", "h", v)
+                if v in {"1m","3m","5m","15m","30m","45m","1h","2h","4h","6h","12h","1d","1w"}:
+                    return v
+        except Exception:
+            pass
+        return None
+
+    @staticmethod
     def _parse_title(title: str):
-        import re
         t = title or ""
-        m = re.search(r"\b([A-Z]{2,10})[/:-]([A-Z]{2,10})\b", t.upper())
-        symbol = f"{m.group(1)}/{m.group(2)}" if m else None
+        u = t.upper()
+        symbol = "XAU/USD" if re.search(r"\bXAUUSD\b", u) else None
+        m = re.search(r"\b([A-Z]{2,10})\s*/\s*([A-Z]{2,10})\b", u)
+        if m:
+            symbol = f"{m.group(1)}/{m.group(2)}"
         timeframe = None
         low = t.lower()
         for tf in ("1w", "1d", "12h", "6h", "4h", "2h", "1h", "45m", "30m", "15m", "5m", "3m", "1m"):
-            if tf in low:
+            if re.search(rf"(?<![\w]){re.escape(tf)}(?![\w])", low):
                 timeframe = tf
                 break
         return symbol, timeframe
