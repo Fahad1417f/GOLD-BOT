@@ -21,14 +21,24 @@ class VerifiedSignalIntegrationV56:
         self.hns = VerifiedHNSMTFV56(api_key=api_key, timeout=timeout)
 
     def read_verified_inputs(self, outputsize: int = 100) -> dict[str, Any]:
-        mtf = self.mtf.read(outputsize=outputsize)
-        hns = self.hns.read(outputsize=outputsize)
-        return {"mtf": mtf.to_dict(), "hns": hns.to_dict()}
+        # One Twelve Data snapshot per run. HNS consumes the same verified
+        # candles instead of issuing a second complete MTF request.
+        mtf_result = self.mtf.read(outputsize=outputsize)
+        hns_result = self.hns.read(outputsize=outputsize, mtf_result=mtf_result)
+        return {"mtf": mtf_result.to_dict(), "hns": hns_result.to_dict()}
 
-    def promote(self, analysis: dict[str, dict], timing: dict[str, Any] | None = None,
-                outputsize: int = 100) -> tuple[Signal, dict[str, Any]]:
+    def promote(
+        self,
+        analysis: dict[str, dict],
+        timing: dict[str, Any] | None = None,
+        outputsize: int = 100,
+    ) -> tuple[Signal, dict[str, Any]]:
         inputs = self.read_verified_inputs(outputsize=outputsize)
-        sig = promote(analysis, timing=timing, verified_hns_mtf=inputs["hns"])
+        sig = promote(
+            analysis,
+            timing=timing,
+            verified_hns_mtf=inputs["hns"],
+        )
         return sig, inputs
 
 
