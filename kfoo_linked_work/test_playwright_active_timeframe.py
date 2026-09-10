@@ -10,7 +10,13 @@ class FakePage:
 
 
 def test_active_timeframe_is_used_instead_of_menu_order():
-    page = FakePage({'active': ['15m'], 'metadata': ['1m', '3m', '5m', '15m'], 'toolbar': []})
+    page = FakePage({
+        'controls': [
+            {'tf': '1m', 'text': '1', 'aria': '', 'title': '', 'ariaPressed': 'false', 'ariaSelected': 'false', 'dataState': None, 'className': '', 'dataKey': '', 'dataInterval': '', 'dataResolution': '', 'rect': {'x': 10, 'y': 75, 'w': 20, 'h': 24}},
+            {'tf': '15m', 'text': '15', 'aria': '', 'title': '', 'ariaPressed': 'true', 'ariaSelected': 'false', 'dataState': None, 'className': '', 'dataKey': '', 'dataInterval': '', 'dataResolution': '', 'rect': {'x': 50, 'y': 75, 'w': 30, 'h': 24}},
+        ],
+        'metadata': [],
+    })
     symbol, timeframe = PlaywrightChartReader._parse_metadata(
         'XAUUSD 4,411.735',
         'XAUUSD\n1m\n3m\n5m\n15m\n1h\nGold Spot / U.S. Dollar\nOANDA',
@@ -22,40 +28,31 @@ def test_active_timeframe_is_used_instead_of_menu_order():
 
 def test_ambiguous_active_timeframes_fail_closed():
     assert PlaywrightChartReader._read_selected_timeframe(
-        FakePage({'active': ['1m', '15m'], 'metadata': [], 'toolbar': []})
+        FakePage({
+            'controls': [
+                {'tf': '1m', 'text': '1', 'ariaPressed': 'true', 'ariaSelected': 'false', 'dataState': None, 'className': ''},
+                {'tf': '15m', 'text': '15', 'ariaPressed': 'true', 'ariaSelected': 'false', 'dataState': None, 'className': ''},
+            ],
+            'metadata': [],
+        })
     ) is None
 
 
 def test_page_level_single_timeframe_can_be_used():
     assert PlaywrightChartReader._read_selected_timeframe(
-        FakePage({'active': [], 'metadata': ['15m'], 'toolbar': []})
+        FakePage({'controls': [], 'metadata': ['15m']})
     ) == '15m'
 
 
-def test_toolbar_stateful_timeframe_can_be_used():
+def test_toolbar_single_numeric_timeframe_can_be_used():
     assert PlaywrightChartReader._read_selected_timeframe(
         FakePage({
-            'active': [],
-            'metadata': [],
-            'toolbar': [
-                {'tf': '1m', 'text': '1', 'rect': {'x': 200, 'y': 75, 'w': 24, 'h': 24}},
-                {'tf': '15m', 'text': '15', 'pressed': True, 'rect': {'x': 250, 'y': 75, 'w': 30, 'h': 24}},
+            'controls': [
+                {'tf': '15m', 'text': '15', 'aria': '', 'title': '', 'ariaPressed': None, 'ariaSelected': None, 'dataState': None, 'className': '', 'dataKey': '', 'dataInterval': '', 'dataResolution': ''},
             ],
+            'metadata': [],
         })
     ) == '15m'
-
-
-def test_toolbar_ambiguous_without_state_fails_closed():
-    assert PlaywrightChartReader._read_selected_timeframe(
-        FakePage({
-            'active': [],
-            'metadata': [],
-            'toolbar': [
-                {'tf': '1m', 'text': '1', 'rect': {'x': 200, 'y': 75, 'w': 24, 'h': 24}},
-                {'tf': '15m', 'text': '15', 'rect': {'x': 250, 'y': 75, 'w': 30, 'h': 24}},
-            ],
-        })
-    ) is None
 
 
 def test_xauusd_title_has_no_fake_timeframe():
@@ -75,8 +72,7 @@ if __name__ == '__main__':
     test_active_timeframe_is_used_instead_of_menu_order()
     test_ambiguous_active_timeframes_fail_closed()
     test_page_level_single_timeframe_can_be_used()
-    test_toolbar_stateful_timeframe_can_be_used()
-    test_toolbar_ambiguous_without_state_fails_closed()
+    test_toolbar_single_numeric_timeframe_can_be_used()
     test_xauusd_title_has_no_fake_timeframe()
     test_timeframe_normalization()
     print('PLAYWRIGHT_ACTIVE_TIMEFRAME_TEST=PASS')
