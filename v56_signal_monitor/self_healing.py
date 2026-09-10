@@ -23,7 +23,13 @@ def read_log():
     except FileNotFoundError:
         return ""
 
+def recent_text(text, max_chars=24000):
+    # Ignore old incidents; otherwise one historical traceback can permanently
+    # force SAFE_MODE after the underlying defect has been fixed.
+    return (text or "")[-max_chars:]
+
 def diagnose(text):
+    text = recent_text(text)
     if KNOWN_ANALYSIS_ERROR in text:
         return {"class":"CODE_INTEGRATION_ERROR","repair":"QUARANTINE_AND_PROPOSE","detail":KNOWN_ANALYSIS_ERROR}
     if "ModuleNotFoundError" in text or "ImportError" in text:
