@@ -12,6 +12,10 @@ ROOT=Path(os.getenv("GOLDBOT_ROOT",Path(__file__).resolve().parents[1])).resolve
 LOG=Path(os.getenv("GOLDBOT_MONITOR_LOG",ROOT/"v56_monitor.log"))
 SUPERVISOR_STATE=ROOT/"supervisor_state.json"
 INTERVAL=float(os.getenv("GOLDBOT_PUBLISH_INTERVAL","10"))
+try:
+    from virtual_trade_tracker import run as update_virtual_trades
+except Exception:
+    update_virtual_trades=None
 MIN_PUBLISH=float(os.getenv("GOLDBOT_MIN_PUBLISH_SECONDS","20"))
 API=f"https://api.github.com/repos/{REPO}/contents/{STATE_PATH}"
 last_hash=""; last_push=0.0
@@ -82,7 +86,15 @@ def main():
         try:
             if LOG.exists():
                 t=LOG.read_text(encoding="utf-8",errors="ignore")
-                if t.strip(): publish(merge_supervisor(parse_log(t)))
+                if t.strip():
+                    state=merge_supervisor(parse_log(t))
+                    if update_virtual_trades:
+                        try:
+                            vt=update_virtual_trades()
+                            state["virtual_trades"]=vt
+                        except Exception as e:
+                            state["virtual_trades_error"]=type(e).__name__+":"+str(e)
+                    publish(state)
         except Exception as e: print("GITHUB_STATE_ERROR="+type(e).__name__+":"+str(e),flush=True)
         time.sleep(INTERVAL)
 
