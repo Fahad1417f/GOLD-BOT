@@ -8,6 +8,8 @@ from auto_developer import evaluate as evaluate_development
 ROOT=Path(os.getenv("GOLDBOT_ROOT", Path(__file__).resolve().parents[1])).resolve()
 BUILD=Path(os.getenv("GOLDBOT_BUILD_PATH",ROOT/"v56_build")).resolve()
 LOG=Path(os.getenv("GOLDBOT_MONITOR_LOG", ROOT/"v56_monitor.log"))
+BRIDGE_LOG=Path(os.getenv("GOLDBOT_BRIDGE_LOG", ROOT/"github_bridge.log"))
+BRIDGE=ROOT/"v56_signal_monitor"/"github_state_bridge.py"
 STATE=ROOT/"supervisor_state.json"
 INTERVAL=float(os.getenv("GOLDBOT_SUPERVISOR_INTERVAL","15"))
 STALE=float(os.getenv("GOLDBOT_STALE_SECONDS","180"))
