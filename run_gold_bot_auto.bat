@@ -22,9 +22,8 @@ echo PYTHON=%PYTHON%
 if exist "%~dp0site_server.py" start "GOLD-BOT SITE" cmd /c ""%PYTHON%" site_server.py"
 if not defined GITHUB_TOKEN echo WARNING=GITHUB_TOKEN_NOT_SET_STATE_BRIDGE_CANNOT_PUBLISH
 start "GOLD-BOT SUPERVISOR" cmd /k ""%PYTHON%" v56_signal_monitor\auto_supervisor.py"
-start "GOLD-BOT STATE BRIDGE" cmd /k ""%PYTHON%" v56_signal_monitor\github_state_bridge.py"
 echo SUPERVISOR=STARTED
-echo STATE_BRIDGE=STARTED
+echo STATE_BRIDGE=SUPERVISED_BY_SUPERVISOR
 echo SITE_SERVER=STARTED_IF_PRESENT
 echo EXECUTION=OFF
 echo SAFE_MODE=ON
