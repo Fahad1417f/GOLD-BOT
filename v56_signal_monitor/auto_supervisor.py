@@ -34,6 +34,15 @@ def resolve_build():
         if (p/"run_v56_overnight_readonly.bat").exists(): return p
     return None
 
+def launch_bridge():
+    if not BRIDGE.exists():
+        return None
+    BRIDGE_LOG.parent.mkdir(parents=True, exist_ok=True)
+    handle=open(BRIDGE_LOG,"a",encoding="utf-8",errors="ignore")
+    return subprocess.Popen([os.getenv("PYTHON","python"),str(BRIDGE)],cwd=str(ROOT),
+        stdout=handle,stderr=subprocess.STDOUT,
+        creationflags=getattr(subprocess,"CREATE_NEW_PROCESS_GROUP",0))
+
 def launch_monitor():
     build=resolve_build()
     if build is None: return None
@@ -47,6 +56,7 @@ def launch_monitor():
 
 def main():
     proc=None
+    bridge_proc=None
     restarts=0
     last_size=-1
     stale_since=None
@@ -59,6 +69,10 @@ def main():
         append("DEVELOPMENT_EVALUATION_ERROR="+type(e).__name__+":"+str(e))
     while True:
         text=read_log()
+        if bridge_proc is None or bridge_proc.poll() is not None:
+            bridge_proc=launch_bridge()
+            if bridge_proc is not None:
+                append("REPAIR_RESULT=STATE_BRIDGE_RESTART_PASS")
         diag=diagnose(text)
         try:
             dev=evaluate_development()
@@ -87,7 +101,9 @@ def main():
             else:
                 restarts+=1
                 append("REPAIR_RESULT=MONITOR_RESTART_PASS")
-                write_state(status="RUNNING",last_error=None,restarts=restarts,repair="RESTART_AND_RETEST",development=development_status)
+                write_state(status="RUNNING",last_error=None,restarts=restarts,repair="RESTART_AND_RETEST",
+                            bridge="RUNNING" if bridge_proc and bridge_proc.poll() is None else "DEGRADED",
+                            development=development_status)
         else:
             size=len(text)
             if size==last_size:
