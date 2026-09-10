@@ -1,11 +1,10 @@
 from __future__ import annotations
 
-"""V56 read-only launcher that wires the existing visual KFOO agent to the
-verified TradingView localhost publisher without changing the agent source.
+"""V56 read-only launcher for the existing visual KFOO agent.
 
-The payload is built only from the KfooTable object produced by the visual
-agent. Missing/unknown required cells or missing aggregates fail closed.
-No synthetic KFOO values are generated.
+It wires the agent's REAL KFOO table publisher to the verified localhost
+TradingView publisher without editing or replacing the original agent.
+No synthetic KFOO values are created.
 """
 
 import os
@@ -28,13 +27,22 @@ def _load_agent():
 
 def _direction(signal: object) -> str:
     s = str(signal or "").strip().lower()
-    if s == "bullish":
+    if s in {"bullish", "buy", "long"}:
         return "long"
-    if s == "bearish":
+    if s in {"bearish", "sell", "short"}:
         return "short"
-    if s == "neutral":
+    if s in {"neutral", "flat", "wait"}:
         return "neutral"
     raise RuntimeError(f"KFOO_VISUAL_SIGNAL_INVALID:{s}")
+
+
+def _validate_frame(tf: str, row: dict) -> None:
+    signal = row.get("signal")
+    _direction(signal)
+    # Require the two factual table cells used by the existing KFOO schema when
+    # present, but do not invent them if the legacy agent does not expose them.
+    if "signal" not in row:
+        raise RuntimeError(f"KFOO_VISUAL_FRAME_INVALID:{tf}:signal_missing")
 
 
 def build_payload(kfoo_table, now: str) -> dict:
@@ -46,6 +54,8 @@ def build_payload(kfoo_table, now: str) -> dict:
     missing = [tf for tf in REQUIRED_TFS if not isinstance(tfs.get(tf), dict)]
     if missing:
         raise RuntimeError("KFOO_VISUAL_TABLE_INCOMPLETE:" + ",".join(missing))
+    for tf in REQUIRED_TFS:
+        _validate_frame(tf, tfs[tf])
 
     agg = table.get("aggregates") or {}
     tfagg = agg.get("timeframes") or {}
@@ -59,14 +69,13 @@ def build_payload(kfoo_table, now: str) -> dict:
             if not 0.0 <= value <= 100.0:
                 raise RuntimeError(f"KFOO_VISUAL_{name}_AGGREGATE_RANGE:{key}")
 
-    bp = float(tfagg.get("bullish_pct"))
-    rp = float(tfagg.get("bearish_pct"))
+    bp = float(tfagg["bullish_pct"])
+    rp = float(tfagg["bearish_pct"])
     table_bias = "bullish" if bp > rp else "bearish" if rp > bp else "neutral"
 
     analysis = {}
     for tf in REQUIRED_TFS:
-        signal = tfs[tf].get("signal")
-        direction = _direction(signal)
+        direction = _direction(tfs[tf].get("signal"))
         analysis[tf] = {
             "active_kfoo": direction,
             "analysis": {
@@ -76,7 +85,10 @@ def build_payload(kfoo_table, now: str) -> dict:
                 "kfoo_table": table,
             },
         }
-    return {"analysis": analysis, "timing": {"published_at": now, "source": "visual_grid"}}
+    return {
+        "analysis": analysis,
+        "timing": {"published_at": now, "source": "visual_grid"},
+    }
 
 
 def main() -> int:
@@ -84,14 +96,18 @@ def main() -> int:
     original = agent.publish_live_kfoo_markers
 
     def wired_publish(kfoo_table, now):
+        # Preserve the original marker publication first; do not alter its data.
         original(kfoo_table, now)
         if not getattr(kfoo_table, "detected", False):
+            agent.monitor_marker("KFOO_PUBLISH=SKIP table_not_detected")
             return
         try:
             payload = build_payload(kfoo_table, now)
             response = requests.post(PUBLISH_URL, json=payload, timeout=3)
             if not response.ok:
-                agent.monitor_marker(f"KFOO_PUBLISH=FAIL http_{response.status_code} {response.text[:300]}")
+                agent.monitor_marker(
+                    f"KFOO_PUBLISH=FAIL http_{response.status_code} {response.text[:300]}"
+                )
                 return
             agent.monitor_marker("KFOO_PUBLISH=PASS source=visual_grid")
         except Exception as exc:
@@ -100,7 +116,11 @@ def main() -> int:
     agent.publish_live_kfoo_markers = wired_publish
     print(f"V56_KFOO_LAUNCHER=WIRED publisher={PUBLISH_URL}", flush=True)
     print("KFOO_SOURCE_POLICY=REAL_VISUAL_TABLE_ONLY", flush=True)
-    return int(agent.main() or 0)
+
+    entry = getattr(agent, "main", None)
+    if not callable(entry):
+        raise RuntimeError("LIVE_VISION_AGENT_MAIN_NOT_FOUND")
+    return int(entry() or 0)
 
 
 if __name__ == "__main__":
