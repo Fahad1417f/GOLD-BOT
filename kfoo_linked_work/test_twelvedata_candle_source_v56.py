@@ -1,12 +1,18 @@
+import os
+
 from twelvedata_candle_source_v56 import TwelveDataCandleSourceV56
 
 
-def test_missing_key_fails_closed(monkeypatch):
-    monkeypatch.delenv('TWELVEDATA_API_KEY', raising=False)
-    result = TwelveDataCandleSourceV56(api_key='').read('15m')
-    assert result.available is False
-    assert result.verified is False
-    assert result.reason == 'TWELVEDATA_API_KEY_NOT_SET'
+def test_missing_key_fails_closed():
+    previous = os.environ.pop('TWELVEDATA_API_KEY', None)
+    try:
+        result = TwelveDataCandleSourceV56(api_key='').read('15m')
+        assert result.available is False
+        assert result.verified is False
+        assert result.reason == 'TWELVEDATA_API_KEY_NOT_SET'
+    finally:
+        if previous is not None:
+            os.environ['TWELVEDATA_API_KEY'] = previous
 
 
 def test_timeframe_mapping():
