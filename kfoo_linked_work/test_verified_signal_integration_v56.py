@@ -1,5 +1,14 @@
 from __future__ import annotations
 
+# Executed as a script from kfoo_linked_work: explicitly add repository root
+# so both signal-engine implementations are importable on Windows/Python.
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
 from signal_engine_v56 import promote as linked_promote
 from v56_signal_monitor.signal_engine_v56 import promote as monitor_promote
 
