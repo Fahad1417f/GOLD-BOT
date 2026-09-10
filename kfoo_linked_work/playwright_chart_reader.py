@@ -155,9 +155,12 @@ class PlaywrightChartReader:
 
     @staticmethod
     def _read_selected_timeframe(page):
-        """Read the selected chart interval from explicit metadata or visible toolbar state.
+        """Read the selected chart interval from DOM and chart toolbar evidence.
 
-        This method is read-only. It never clicks or changes the TradingView chart.
+        This method is read-only. It never clicks, changes the timeframe, or
+        executes trades. A candidate is accepted only when its evidence is
+        specific enough to distinguish the selected chart interval from the
+        complete timeframe menu.
         """
         try:
             result = page.evaluate(
@@ -172,118 +175,108 @@ class PlaywrightChartReader:
                       if (m) return `${m[1]}h`;
                       return null;
                     };
-                    const active = [];
-                    const metadata = [];
-                    const toolbar = [];
-
-                    const metadataSelectors = [
-                      '[data-timeframe]', '[data-interval]', '[data-resolution]',
-                      'meta[name="chart-timeframe"]', 'meta[name="timeframe"]',
-                      'meta[property="chart:timeframe"]'
-                    ];
-                    for (const n of document.querySelectorAll(metadataSelectors.join(','))) {
-                      for (const attr of ['data-timeframe','data-interval','data-resolution','content']) {
-                        const tf = normalize(n.getAttribute(attr));
-                        if (tf) metadata.push(tf);
-                      }
-                    }
-
-                    const activeSelectors = [
-                      '[aria-selected="true"]', '[aria-pressed="true"]',
-                      '[data-state="active"]', '[data-selected="true"]',
-                      '[aria-current="true"]', '[aria-current="page"]',
-                      '.selected', '.active'
-                    ];
-                    for (const n of document.querySelectorAll(activeSelectors.join(','))) {
-                      for (const c of [
-                        n.getAttribute('data-timeframe'), n.getAttribute('data-interval'),
-                        n.getAttribute('data-resolution'), n.getAttribute('data-value'),
-                        n.getAttribute('data-key'), n.getAttribute('aria-label'),
-                        n.getAttribute('title'), n.textContent
-                      ]) {
-                        const tf = normalize(c);
-                        if (tf) active.push(tf);
-                      }
-                    }
-
-                    // TradingView may expose no selected-state attribute at all.
-                    // In that case, collect visible exact timeframe controls and
-                    // retain enough geometry/state for the Python side to decide.
-                    for (const n of document.querySelectorAll('button,[role="button"],[role="tab"],div')) {
+                    const controls = [];
+                    const selector = 'button,[role="button"],[role="tab"]';
+                    for (const n of document.querySelectorAll(selector)) {
                       if (n.offsetParent === null) continue;
-                      const rect = n.getBoundingClientRect();
-                      if (!rect.width || !rect.height || rect.y < 0 || rect.y > 180) continue;
-                      const candidates = [
-                        n.getAttribute('data-timeframe'), n.getAttribute('data-interval'),
-                        n.getAttribute('data-resolution'), n.getAttribute('data-value'),
-                        n.getAttribute('aria-label'), n.getAttribute('title'),
-                        n.textContent
-                      ];
-                      for (const c of candidates) {
-                        const tf = normalize(c);
+                      const r = n.getBoundingClientRect();
+                      if (!r.width || !r.height || r.y < 0 || r.y > 180) continue;
+                      const attrs = {
+                        dataValue: n.getAttribute('data-value') || '',
+                        dataKey: n.getAttribute('data-key') || '',
+                        dataTimeframe: n.getAttribute('data-timeframe') || '',
+                        dataInterval: n.getAttribute('data-interval') || '',
+                        dataResolution: n.getAttribute('data-resolution') || '',
+                        aria: n.getAttribute('aria-label') || '',
+                        title: n.getAttribute('title') || '',
+                        text: (n.textContent || '').trim(),
+                        ariaPressed: n.getAttribute('aria-pressed'),
+                        ariaSelected: n.getAttribute('aria-selected'),
+                        dataState: n.getAttribute('data-state'),
+                        className: typeof n.className === 'string' ? n.className : ''
+                      };
+                      const values = Object.values(attrs).slice(0, 7);
+                      for (const raw of values) {
+                        const tf = normalize(raw);
                         if (!tf) continue;
-                        const cs = getComputedStyle(n);
-                        const bg = cs.backgroundColor || '';
-                        const border = cs.borderColor || '';
-                        const cls = typeof n.className === 'string' ? n.className : '';
-                        const pressed = n.getAttribute('aria-pressed') === 'true';
-                        const selected = n.getAttribute('aria-selected') === 'true';
-                        const dataState = n.getAttribute('data-state') || '';
-                        toolbar.push({
-                          tf,
-                          text:(n.textContent || '').trim(),
-                          aria:n.getAttribute('aria-label') || '',
-                          title:n.getAttribute('title') || '',
-                          rect:{x:rect.x,y:rect.y,w:rect.width,h:rect.height},
-                          pressed, selected, dataState,
-                          className: cls,
-                          background:bg,
-                          border
+                        controls.push({
+                          tf, ...attrs,
+                          rect: {x:r.x,y:r.y,w:r.width,h:r.height}
                         });
                         break;
                       }
                     }
-                    return {active:[...new Set(active)], metadata:[...new Set(metadata)], toolbar};
+
+                    // Page-level chart metadata, restricted to explicit attributes.
+                    const metadata = [];
+                    for (const n of document.querySelectorAll('[data-timeframe],[data-interval],[data-resolution],meta[name="timeframe"],meta[name="chart-timeframe"]')) {
+                      for (const raw of [
+                        n.getAttribute('data-timeframe'), n.getAttribute('data-interval'),
+                        n.getAttribute('data-resolution'), n.getAttribute('content')
+                      ]) {
+                        const tf = normalize(raw);
+                        if (tf) metadata.push(tf);
+                      }
+                    }
+
+                    return {controls, metadata:[...new Set(metadata)]};
                 }"""
             )
+
             valid = {"1m","3m","5m","15m","30m","45m","1h","2h","4h","6h","12h","1d","1w"}
-            active = [v for v in (result or {}).get("active", []) if v in valid]
-            metadata = [v for v in (result or {}).get("metadata", []) if v in valid]
-            if len(set(active)) == 1:
-                return active[0]
-            if len(set(active)) > 1:
+            controls = [x for x in (result or {}).get("controls", []) if x.get("tf") in valid]
+            metadata = [x for x in (result or {}).get("metadata", []) if x in valid]
+
+            # 1. Explicit state wins, but only when it resolves to one timeframe.
+            explicit = []
+            for x in controls:
+                state = " ".join([
+                    str(x.get("ariaPressed") or ""),
+                    str(x.get("ariaSelected") or ""),
+                    str(x.get("dataState") or ""),
+                    str(x.get("className") or ""),
+                ]).lower()
+                if (
+                    x.get("ariaPressed") == "true"
+                    or x.get("ariaSelected") == "true"
+                    or str(x.get("dataState") or "").lower() in {"active", "selected"}
+                    or re.search(r"(?:^|[\s_-])(selected|active|is-selected|isactive)(?:$|[\s_-])", state)
+                ):
+                    explicit.append(x["tf"])
+            if len(set(explicit)) == 1:
+                return explicit[0]
+            if len(set(explicit)) > 1:
                 return None
+
+            # 2. Explicit page metadata wins over the menu, when unique.
             if len(set(metadata)) == 1:
                 return metadata[0]
 
-            toolbar = result.get("toolbar", []) if isinstance(result, dict) else []
-            # Prefer explicit visual state when represented as class/state.
-            stateful = [
-                x for x in toolbar
-                if x.get("pressed") or x.get("selected")
-                or str(x.get("dataState", "")).lower() in {"active", "selected"}
-                or any(token in str(x.get("className", "")).lower().split() for token in ("selected", "active", "is-selected", "isactive"))
-            ]
-            stateful_tfs = {x.get("tf") for x in stateful if x.get("tf") in valid}
-            if len(stateful_tfs) == 1:
-                return next(iter(stateful_tfs))
-            if len(stateful_tfs) > 1:
-                return None
+            # 3. TradingView sometimes exposes the current interval in a compact
+            # toolbar control as a numeric label (e.g. "15") while all menu
+            # buttons carry their own labels. In that case look for a control
+            # whose text is numeric and whose accessible metadata does NOT look
+            # like an option list entry. Require a single unique tf.
+            compact = []
+            for x in controls:
+                text = x.get("text", "").strip()
+                aria = x.get("aria", "").strip().lower()
+                title = x.get("title", "").strip().lower()
+                if re.fullmatch(r"(?:1|3|5|15|30|45)", text) or PlaywrightChartReader._normalize_timeframe(text):
+                    evidence = " ".join([aria, title, str(x.get("dataKey") or ""), str(x.get("dataInterval") or ""), str(x.get("dataResolution") or "")]).lower()
+                    # Do not accept controls explicitly labelled as list/menu options.
+                    if not any(token in evidence for token in ("menu", "dropdown", "option")):
+                        compact.append(x)
 
-            # Never select merely because one timeframe control exists: the live
-            # page normally contains the complete timeframe menu. Return a value
-            # only when the controls form a single compact label group and exactly
-            # one candidate has a distinct visual state.
-            compact = [x for x in toolbar if x.get("tf") in valid and x.get("rect", {}).get("w", 0) <= 90]
-            distinct = {}
-            for item in compact:
-                key = (item.get("tf"), round(item.get("rect", {}).get("x", 0), 1), round(item.get("rect", {}).get("y", 0), 1))
-                distinct[key] = item
-            items = list(distinct.values())
-            # Diagnostics are emitted only when nothing is selected; they help
-            # identify TradingView DOM changes without making a speculative choice.
-            if len({x.get("tf") for x in items}) > 1:
-                return None
+            by_tf = {}
+            for x in compact:
+                by_tf.setdefault(x["tf"], []).append(x)
+            if len(by_tf) == 1:
+                only_tf = next(iter(by_tf))
+                # More than one duplicate control for the same tf is acceptable;
+                # multiple different timeframes are not.
+                return only_tf
+
         except Exception:
             pass
         return None
