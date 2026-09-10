@@ -7,9 +7,9 @@ Stages:
   -> live KFOO analysis -> V56 Signal Engine -> local webhook.
 
 The harness is read-only and fail-closed. It never enables or executes trades.
-Live KFOO is discovered from the running monitor's local state/output; no
-synthetic KFOO is created for a live run. Use --smoke only for a deterministic
-contract test.
+Live KFOO is read from the actual V56 monitor log markers through the
+live_kfoo_source_v56 adapter; no synthetic KFOO is created for a live run.
+Use --smoke only for a deterministic contract test.
 """
 
 import argparse
@@ -24,6 +24,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from live_kfoo_source_v56 import parse_live_kfoo  # noqa: E402
 from playwright_chart_reader import PlaywrightChartReader  # noqa: E402
 from verified_signal_integration_v56 import VerifiedSignalIntegrationV56  # noqa: E402
 from signal_engine_v56 import promote  # noqa: E402
@@ -73,85 +74,57 @@ def post_json(url: str, payload: dict, timeout: float = 10.0) -> dict:
         return json.loads(response.read().decode("utf-8"))
 
 
-def _valid_kfoo_analysis(value: object) -> bool:
-    if not isinstance(value, dict):
-        return False
-    # Accept either a direct timeframe map or a wrapper containing analysis.
-    candidate = value.get("analysis") if isinstance(value.get("analysis"), dict) else value
-    if not isinstance(candidate, dict):
-        return False
-    return all(isinstance(candidate.get(tf), dict) for tf in REQUIRED_TFS)
-
-
-def _unwrap_kfoo_source(value: dict) -> tuple[dict, dict]:
-    if _valid_kfoo_analysis(value):
-        candidate = value.get("analysis") if isinstance(value.get("analysis"), dict) else value
-        timing = value.get("timing", {}) if isinstance(value.get("timing"), dict) else {}
-        return candidate, timing
-    for key in ("kfoo_analysis", "kfooAnalysis", "kfoo", "live_kfoo_analysis"):
-        candidate = value.get(key)
-        if _valid_kfoo_analysis(candidate):
-            timing = value.get("timing", {}) if isinstance(value.get("timing"), dict) else {}
-            return (candidate.get("analysis") if isinstance(candidate.get("analysis"), dict) else candidate), timing
-    raise ValueError("no verified KFOO timeframe analysis in source")
-
-
-def _candidate_roots() -> list[Path]:
-    roots = [ROOT]
-    explicit = os.getenv("GOLDBOT_BUILD_PATH", "").strip()
-    if explicit:
-        roots.append(Path(explicit).expanduser())
-    roots.extend(sorted(ROOT.parent.glob("GOLD_BOT_V56*")))
-    return list(dict.fromkeys(p.resolve() for p in roots if p.exists()))
-
-
 def load_live_kfoo() -> tuple[dict, dict, str]:
-    # Explicit JSON remains supported for CI/isolated tests, but it is not required.
     raw = os.getenv("GOLDBOT_KFOO_ANALYSIS_JSON", "").strip()
     if raw:
-        value = json.loads(raw)
-        analysis, timing = _unwrap_kfoo_source(value)
-        return analysis, timing, "env:GOLDBOT_KFOO_ANALYSIS_JSON"
+        from_payload = json.loads(raw)
+        if not isinstance(from_payload, dict):
+            raise RuntimeError("GOLDBOT_KFOO_ANALYSIS_JSON must contain a JSON object")
+        candidate = from_payload.get("analysis") if isinstance(from_payload.get("analysis"), dict) else from_payload
+        if not all(isinstance(candidate.get(tf), dict) for tf in REQUIRED_TFS):
+            raise RuntimeError("GOLDBOT_KFOO_ANALYSIS_JSON missing required timeframe objects")
+        timing = from_payload.get("timing", {}) if isinstance(from_payload.get("timing"), dict) else {}
+        return candidate, timing, "env:GOLDBOT_KFOO_ANALYSIS_JSON"
 
-    paths: list[Path] = []
-    explicit_path = os.getenv("GOLDBOT_KFOO_ANALYSIS_PATH", "").strip()
-    if explicit_path:
-        paths.append(Path(explicit_path).expanduser())
-    names = ("kfoo_live_analysis.json", "kfoo_analysis.json", "live_kfoo_analysis.json", "kfoo_state.json")
-    for root in _candidate_roots():
-        paths.extend(root / name for name in names)
-        paths.extend(root / "v56_build" / name for name in names)
+    log_path = Path(os.getenv("GOLDBOT_MONITOR_LOG", ROOT / "v56_monitor.log")).expanduser()
+    build_path = os.getenv("GOLDBOT_BUILD_PATH", "").strip()
+    candidates = [log_path]
+    if build_path:
+        candidates.append(Path(build_path) / "v56_monitor.log")
+    candidates.extend(sorted(ROOT.parent.glob("GOLD_BOT_V56*/v56_monitor.log")))
 
-    seen: set[Path] = set()
     errors: list[str] = []
-    for path in paths:
+    seen: set[Path] = set()
+    for path in candidates:
         path = path.resolve()
         if path in seen or not path.is_file():
             continue
         seen.add(path)
         try:
-            value = json.loads(path.read_text(encoding="utf-8"))
-            analysis, timing = _unwrap_kfoo_source(value)
-            return analysis, timing, f"file:{path}"
+            text = path.read_text(encoding="utf-8", errors="ignore")
+            analysis, timing = parse_live_kfoo(text)
+            return analysis, timing, f"log:{path}"
         except Exception as exc:
-            errors.append(f"{path.name}:{type(exc).__name__}")
+            errors.append(f"{path}:{type(exc).__name__}:{exc}")
 
-    # The local website state is a read-only bridge. We only accept it when the
-    # full upstream KFOO analysis is actually present; aggregates alone are not
-    # promoted into fake samples or directions.
-    state_path = ROOT / "website_state.json"
-    if state_path.is_file():
+    # Keep the existing state-file fallback, but only for a complete normalized
+    # KFOO object. Scalar website aggregates must never be promoted to fake input.
+    for path in (ROOT / "website_state.json",):
+        if not path.is_file():
+            continue
         try:
-            value = json.loads(state_path.read_text(encoding="utf-8"))
-            analysis, timing = _unwrap_kfoo_source(value)
-            return analysis, timing, f"file:{state_path}"
+            value = json.loads(path.read_text(encoding="utf-8"))
+            candidate = value.get("analysis") if isinstance(value, dict) and isinstance(value.get("analysis"), dict) else value
+            if isinstance(candidate, dict) and all(isinstance(candidate.get(tf), dict) for tf in REQUIRED_TFS):
+                timing = value.get("timing", {}) if isinstance(value.get("timing"), dict) else {}
+                return candidate, timing, f"file:{path}"
         except Exception as exc:
-            errors.append(f"website_state.json:{type(exc).__name__}")
+            errors.append(f"{path.name}:{type(exc).__name__}:{exc}")
 
-    detail = "; ".join(errors[-6:]) if errors else "no candidate KFOO state found"
+    detail = "; ".join(errors[-6:]) if errors else "no monitor log found"
     raise RuntimeError(
-        "LIVE_KFOO_SOURCE_NOT_FOUND: running monitor must publish full verified "
-        f"KFOO analysis for {','.join(REQUIRED_TFS)}; {detail}"
+        "LIVE_KFOO_SOURCE_NOT_FOUND: running monitor must publish verified KFOO "
+        f"markers for {','.join(REQUIRED_TFS)}; {detail}"
     )
 
 
