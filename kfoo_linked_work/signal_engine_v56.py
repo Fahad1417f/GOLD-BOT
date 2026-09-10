@@ -64,7 +64,7 @@ def promote(analysis: dict[str,dict], timing: dict[str,Any]|None=None, verified_
     hns_blocked,hns_reasons=_hns_gate(verified_hns_mtf, g4 if gravity else None)
     reasons.extend(hns_reasons)
     if hns_blocked:
-        return Signal('WAIT',g4 or 'neutral',0.20,reasons,False,False,datetime.now(timezone.utc).isoformat())
+        return Signal(level='WAIT',direction=g4 or 'neutral',score=0.20,reasons=reasons,setup_ready=False,entry_ready=False,timestamp_utc=datetime.now(timezone.utc).isoformat())
     leader=analysis.get('15m') or {}; linfo=leader.get('analysis') or {}
     ldir=_dir(leader.get('active_kfoo')) or _dir((linfo.get('kfoo_table_direction') or {}).get('bias')) or _dir(linfo.get('direction'))
     table=linfo.get('kfoo_table') or {}; aggs=table.get('aggregates') or {}
@@ -80,15 +80,15 @@ def promote(analysis: dict[str,dict], timing: dict[str,Any]|None=None, verified_
     if kfoo_ok: reasons.append(f'KFOO confirmed TF={tf_pct:.1f}% IND={ind_pct:.1f}%')
     else: reasons.append(f'KFOO incomplete/weak TF={tf_pct:.1f}% IND={ind_pct:.1f}%')
     if not gravity or not leader_ok or not kfoo_ok:
-        return Signal('WAIT',g4 or ldir or 'neutral',0.40 if gravity else 0.20,reasons,False,False,datetime.now(timezone.utc).isoformat())
+        return Signal(level='WAIT',direction=g4 or ldir or 'neutral',score=0.40 if gravity else 0.20,reasons=reasons,setup_ready=False,entry_ready=False,timestamp_utc=datetime.now(timezone.utc).isoformat())
     if not bool(timing.get('leader_closed')):
-        return Signal('STRONG_SETUP',g4,0.85,reasons+['waiting for 15M candle close'],setup_ready=True,entry_ready=False,timestamp_utc=datetime.now(timezone.utc).isoformat())
+        return Signal(level='STRONG_SETUP',direction=g4,score=0.85,reasons=reasons+['waiting for 15M candle close'],setup_ready=True,entry_ready=False,timestamp_utc=datetime.now(timezone.utc).isoformat())
     a5=analysis.get('5m') or {}; a3=analysis.get('3m') or {}
     d5=_dir(((a5.get('analysis') or {}).get('kfoo_table_direction') or {}).get('bias')) or _dir((a5.get('analysis') or {}).get('direction'))
     d3=_dir(((a3.get('analysis') or {}).get('kfoo_table_direction') or {}).get('bias')) or _dir((a3.get('analysis') or {}).get('direction'))
     entry=d5==g4 and d3==g4 and bool((a5.get('analysis') or {}).get('kfoo_table_detected')) and bool((a3.get('analysis') or {}).get('kfoo_table_detected'))
-    if entry: return Signal('STRONG_ENTRY',g4,0.95,reasons+['5M and 3M timing aligned'],'',True,True,datetime.now(timezone.utc).isoformat())
-    return Signal('STRONG_SETUP',g4,0.90,reasons+[f'timing not aligned (5M={d5}, 3M={d3})'],'',True,False,datetime.now(timezone.utc).isoformat())
+    if entry: return Signal(level='STRONG_ENTRY',direction=g4,score=0.95,reasons=reasons+['5M and 3M timing aligned'],setup_ready=True,entry_ready=True,timestamp_utc=datetime.now(timezone.utc).isoformat())
+    return Signal(level='STRONG_SETUP',direction=g4,score=0.90,reasons=reasons+[f'timing not aligned (5M={d5}, 3M={d3})'],setup_ready=True,entry_ready=False,timestamp_utc=datetime.now(timezone.utc).isoformat())
 
 def finalize(sig: Signal, payload_core: dict)->Signal:
     raw=json.dumps({'level':sig.level,'direction':sig.direction,'core':payload_core},sort_keys=True,ensure_ascii=False)
