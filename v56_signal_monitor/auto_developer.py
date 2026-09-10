@@ -23,7 +23,11 @@ def latest(text, pattern, default="unknown"):
     m = list(re.finditer(pattern, text, re.I | re.M))
     return m[-1].group(1).strip() if m else default
 
+def recent_text(text, max_chars=24000):
+    return (text or "")[-max_chars:]
+
 def build_metrics(text):
+    text = recent_text(text)
     return {
         "direction_4h": latest(text, r"DIRECTION_4H=([^\s]+)"),
         "direction_1h": latest(text, r"DIRECTION_1H=([^\s]+)"),
