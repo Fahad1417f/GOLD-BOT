@@ -1,17 +1,10 @@
 from __future__ import annotations
 
-"""Read-only TradingView timeframe controller for GOLD-BOT V56.
+"""V56 read-only TradingView controller.
 
-Uses the already-open Chrome instance exposed through CDP. It changes only the
-TradingView interval control and never submits orders or touches execution UI.
-The controller cycles the required V56 frames in order and exposes the active
-frame to the monitor through a small local state file.
-
-Required frames:
-  4h, 1h, 15m, 5m, 3m
-
-The chart symbol/page is not changed. The user must leave the intended
-TradingView chart open in the CDP-enabled Chrome instance.
+The controller owns the CDP-connected Playwright session and the selected
+TradingView tab. It cycles the analysis frames in one process/thread and
+publishes explicit controller state for the visual agent.
 """
 
 import json
@@ -21,40 +14,33 @@ from pathlib import Path
 
 from playwright.sync_api import sync_playwright
 
-
 REQUIRED_TFS = ("4h", "1h", "15m", "5m", "3m")
 CDP_URL = os.getenv("TRADINGVIEW_CDP_URL", "http://127.0.0.1:9222")
-INTERVAL_HOLD_SECONDS = float(os.getenv("GOLDBOT_TF_HOLD_SECONDS", "18"))
+HOLD_SECONDS = float(os.getenv("GOLDBOT_TF_HOLD_SECONDS", "18"))
+SETTLE_SECONDS = float(os.getenv("GOLDBOT_TF_SETTLE_SECONDS", "2.5"))
 STATE_FILE = Path(os.getenv("GOLDBOT_TF_STATE_FILE", "tradingview_timeframe_state.json"))
+PAGE_URL = os.getenv("GOLDBOT_TRADINGVIEW_PAGE", "https://ar.tradingview.com/chart/T2r9HHsB/")
 
 
-def _write_state(tf: str, status: str, detail: str = "") -> None:
-    STATE_FILE.write_text(
-        json.dumps(
-            {"active_timeframe": tf, "status": status, "detail": detail, "updated": time.time()},
-            ensure_ascii=False,
-            indent=2,
-        ),
-        encoding="utf-8",
-    )
+def _state(tf: str, status: str, detail: str = "") -> None:
+    STATE_FILE.write_text(json.dumps({"active_timeframe": tf, "status": status, "detail": detail, "updated": time.time()}, ensure_ascii=False), encoding="utf-8")
 
 
 def _find_page(browser):
-    pages = [
-        p
-        for c in browser.contexts
-        for p in c.pages
-        if "tradingview.com" in (p.url or "").lower()
-    ]
+    pages = [p for c in browser.contexts for p in c.pages if PAGE_URL.split("/chart/")[0] in (p.url or "") and "tradingview.com" in (p.url or "").lower()]
+    if not pages:
+        pages = [p for c in browser.contexts for p in c.pages if "tradingview.com" in (p.url or "").lower()]
     if not pages:
         raise RuntimeError("TRADINGVIEW_PAGE_NOT_FOUND")
-    return pages[0]
+    page = pages[0]
+    if PAGE_URL and PAGE_URL not in page.url and "tradingview.com/chart/" not in page.url:
+        raise RuntimeError("TRADINGVIEW_TARGET_PAGE_NOT_MATCHED")
+    return page
 
 
 def _set_interval(page, tf: str) -> None:
-    # TradingView supports keyboard interval entry when the chart has focus.
-    # We first focus the chart, then use the interval shortcut. No navigation,
-    # order entry, or other UI action is performed.
+    # TradingView interval shortcut: focus chart, enter the interval, confirm.
+    # Only timeframe is changed; no symbol/navigation/order controls are used.
     page.mouse.click(700, 450)
     page.keyboard.press("Escape")
     page.keyboard.press("0")
@@ -66,18 +52,14 @@ def run_forever() -> None:
     with sync_playwright() as pw:
         browser = pw.chromium.connect_over_cdp(CDP_URL)
         page = _find_page(browser)
-        if "tradingview.com" not in (page.url or "").lower():
-            raise RuntimeError("TRADINGVIEW_PAGE_NOT_ACTIVE")
-
+        _state("none", "connected", page.url)
         while True:
             for tf in REQUIRED_TFS:
-                _write_state(tf, "switching")
+                _state(tf, "switching")
                 _set_interval(page, tf)
-                # Allow the TradingView toolbar/chart to settle before the
-                # visual agent captures and analyzes this frame.
-                time.sleep(2.5)
-                _write_state(tf, "active")
-                time.sleep(INTERVAL_HOLD_SECONDS)
+                time.sleep(SETTLE_SECONDS)
+                _state(tf, "active")
+                time.sleep(HOLD_SECONDS)
 
 
 if __name__ == "__main__":
