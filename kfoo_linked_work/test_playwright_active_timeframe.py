@@ -32,26 +32,27 @@ def test_page_level_single_timeframe_can_be_used():
     ) == '15m'
 
 
-def test_toolbar_single_timeframe_candidate_can_be_used():
+def test_toolbar_stateful_timeframe_can_be_used():
     assert PlaywrightChartReader._read_selected_timeframe(
         FakePage({
             'active': [],
             'metadata': [],
             'toolbar': [
-                {'tf': '15m', 'text': '15', 'aria': '', 'title': '', 'rect': {'x': 250, 'y': 75, 'w': 30, 'h': 24}},
+                {'tf': '1m', 'text': '1', 'rect': {'x': 200, 'y': 75, 'w': 24, 'h': 24}},
+                {'tf': '15m', 'text': '15', 'pressed': True, 'rect': {'x': 250, 'y': 75, 'w': 30, 'h': 24}},
             ],
         })
     ) == '15m'
 
 
-def test_toolbar_multiple_timeframes_fail_closed():
+def test_toolbar_ambiguous_without_state_fails_closed():
     assert PlaywrightChartReader._read_selected_timeframe(
         FakePage({
             'active': [],
             'metadata': [],
             'toolbar': [
-                {'tf': '1m', 'text': '1', 'aria': '', 'title': '', 'rect': {'x': 200, 'y': 75, 'w': 24, 'h': 24}},
-                {'tf': '15m', 'text': '15', 'aria': '', 'title': '', 'rect': {'x': 250, 'y': 75, 'w': 30, 'h': 24}},
+                {'tf': '1m', 'text': '1', 'rect': {'x': 200, 'y': 75, 'w': 24, 'h': 24}},
+                {'tf': '15m', 'text': '15', 'rect': {'x': 250, 'y': 75, 'w': 30, 'h': 24}},
             ],
         })
     ) is None
@@ -74,8 +75,8 @@ if __name__ == '__main__':
     test_active_timeframe_is_used_instead_of_menu_order()
     test_ambiguous_active_timeframes_fail_closed()
     test_page_level_single_timeframe_can_be_used()
-    test_toolbar_single_timeframe_candidate_can_be_used()
-    test_toolbar_multiple_timeframes_fail_closed()
+    test_toolbar_stateful_timeframe_can_be_used()
+    test_toolbar_ambiguous_without_state_fails_closed()
     test_xauusd_title_has_no_fake_timeframe()
     test_timeframe_normalization()
     print('PLAYWRIGHT_ACTIVE_TIMEFRAME_TEST=PASS')
