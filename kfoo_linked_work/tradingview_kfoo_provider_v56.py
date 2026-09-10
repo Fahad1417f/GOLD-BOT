@@ -13,6 +13,8 @@ def normalize_direction(value: Any) -> str | None:
             return "long"
         if v in {"short", "bearish", "sell"}:
             return "short"
+        if v in {"neutral", "flat", "wait"}:
+            return "neutral"
     return None
 
 
