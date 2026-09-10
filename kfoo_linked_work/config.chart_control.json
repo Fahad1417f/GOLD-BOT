@@ -10,6 +10,14 @@
     "chart_point": [700, 450],
     "cdp_url_env": "TRADINGVIEW_CDP_URL"
   },
+  "chart_reader": {
+    "enabled": true,
+    "backend": "playwright_cdp",
+    "read_visible_text": true,
+    "capture_screenshot": true,
+    "require_verified_ohlc_for_hns": true,
+    "verified_candle_provider": "window.__GOLDBOT_CANDLES__"
+  },
   "demo_trading": {
     "enabled": false,
     "base_url": "https://testnet.binancefuture.com"
