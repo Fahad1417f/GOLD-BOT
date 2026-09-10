@@ -113,14 +113,29 @@ class PlaywrightChartReader:
             return None
 
     @staticmethod
-    def _parse_metadata(title: str, text: str, page=None):
-        """Parse TradingView metadata from title first, then visible DOM text.
+    def _normalize_timeframe(value: str | None) -> str | None:
+        if not value:
+            return None
+        s = " ".join(str(value).strip().split())
+        tf = re.fullmatch(r"(1m|3m|5m|15m|30m|45m|1h|2h|4h|6h|12h|1d|1w)", s, re.I)
+        if tf:
+            return tf.group(1).lower()
+        m = re.fullmatch(r"(1|3|5|15|30|45)\s*(?:m|min|mins|minute|minutes)", s, re.I)
+        if m:
+            return f"{m.group(1)}m"
+        h = re.fullmatch(r"(1|2|4|6|12)\s*(?:h|hr|hrs|hour|hours)", s, re.I)
+        if h:
+            return f"{h.group(1)}h"
+        return None
 
-        TradingView commonly exposes titles such as ``XAUUSD 4,411`` while
-        the visible chart identifies the instrument as ``Gold Spot / U.S.
-        Dollar``. Timeframe detection is accepted only from an explicitly
-        selected/active DOM control; the reader never treats the presence of
-        the timeframe menu as proof of the selected interval.
+    @staticmethod
+    def _parse_metadata(title: str, text: str, page=None):
+        """Parse TradingView metadata from title and visible DOM text.
+
+        Timeframe detection is deliberately fail-closed: the reader accepts a
+        timeframe only from an explicit active/selected control, a page-level
+        selected-timeframe metadata attribute, or an unambiguous standalone
+        body token. The mere presence of the timeframe menu is not evidence.
         """
         symbol, timeframe = PlaywrightChartReader._parse_title(title)
         body = text or ""
@@ -138,9 +153,6 @@ class PlaywrightChartReader:
             timeframe = PlaywrightChartReader._read_selected_timeframe(page)
 
         if timeframe is None:
-            # Only accept an unambiguous standalone timeframe token. This is
-            # deliberately conservative because the body normally contains
-            # the full list of timeframe buttons.
             matches = re.findall(r"(?<![\w])(?:1m|3m|5m|15m|30m|45m|1h|2h|4h|6h|12h|1d|1w)(?![\w])", body.lower())
             if len(set(matches)) == 1:
                 timeframe = matches[0]
@@ -149,16 +161,39 @@ class PlaywrightChartReader:
 
     @staticmethod
     def _read_selected_timeframe(page):
-        """Find the actually selected TradingView timeframe control.
-
-        Only nodes carrying an explicit active/selected state are considered.
-        In particular, bare ``data-value`` nodes are NOT scanned because
-        TradingView renders every timeframe option in the DOM; doing so can
-        incorrectly return the first option (often 1m).
-        """
+        """Read the active TradingView interval from explicit DOM/page state."""
         try:
-            values = page.evaluate(
+            result = page.evaluate(
                 r"""() => {
+                    const valid = new Set(['1m','3m','5m','15m','30m','45m','1h','2h','4h','6h','12h','1d','1w']);
+                    const normalize = (value) => {
+                      const s = (value || '').trim().replace(/\s+/g, ' ');
+                      let m = s.match(/^(1m|3m|5m|15m|30m|45m|1h|2h|4h|6h|12h|1d|1w)$/i);
+                      if (m) return m[1].toLowerCase();
+                      m = s.match(/^(1|3|5|15|30|45)\s*(m|min|mins|minute|minutes)$/i);
+                      if (m) return `${m[1]}m`;
+                      m = s.match(/^(1|2|4|6|12)\s*(h|hr|hrs|hour|hours)$/i);
+                      if (m) return `${m[1]}h`;
+                      return null;
+                    };
+
+                    const found = [];
+
+                    // 1) Page-level attributes / state. These are more specific
+                    // than the visible menu because they describe the current chart.
+                    const pageNodes = Array.from(document.querySelectorAll(
+                      'body, [data-testid], [data-name], [data-role], [data-value], [aria-label], [title]'
+                    ));
+                    for (const n of pageNodes) {
+                      const attrs = ['data-timeframe','data-interval','data-resolution','data-value','aria-label','title'];
+                      for (const attr of attrs) {
+                        const v = normalize(n.getAttribute(attr));
+                        if (v && attr !== 'data-value') found.push(v);
+                      }
+                    }
+
+                    // 2) Explicit active/selected controls. We inspect the
+                    // selected node's own attributes/text only.
                     const activeSelectors = [
                       '[aria-selected="true"]',
                       '[aria-pressed="true"]',
@@ -167,45 +202,51 @@ class PlaywrightChartReader:
                       '.selected',
                       '.active'
                     ];
-                    const nodes = Array.from(document.querySelectorAll(activeSelectors.join(',')));
-                    const out = [];
-                    const tfRe = /^(1m|3m|5m|15m|30m|45m|1h|2h|4h|6h|12h|1d|1w)$/i;
-                    const minRe = /^(1|3|5|15|30|45)\s*(min|mins|minute|minutes)$/i;
-                    const hourRe = /^(1|2|4|6|12)\s*(h|hr|hrs|hour|hours)$/i;
-                    const normalize = (value) => {
-                      const s = (value || '').trim();
-                      let m = s.match(tfRe);
-                      if (m) return m[1].toLowerCase();
-                      m = s.match(minRe);
-                      if (m) return `${m[1]}m`;
-                      m = s.match(hourRe);
-                      if (m) return `${m[1]}h`;
-                      return null;
-                    };
-                    for (const n of nodes) {
+                    const activeNodes = Array.from(document.querySelectorAll(activeSelectors.join(',')));
+                    const active = [];
+                    for (const n of activeNodes) {
                       const candidates = [
+                        n.getAttribute('data-timeframe'),
+                        n.getAttribute('data-interval'),
+                        n.getAttribute('data-resolution'),
                         n.getAttribute('data-value'),
                         n.getAttribute('aria-label'),
                         n.getAttribute('title'),
                         n.textContent
                       ];
-                      for (const value of candidates) {
-                        const normalized = normalize(value);
-                        if (normalized) out.push(normalized);
+                      for (const candidate of candidates) {
+                        const v = normalize(candidate);
+                        if (v) active.push(v);
                       }
                     }
-                    return [...new Set(out)];
+
+                    // Return explicit active state first. If there is exactly one
+                    // page-level metadata value, it is also safe to use.
+                    const uniqueActive = [...new Set(active)];
+                    const uniqueFound = [...new Set(found)];
+                    return {
+                      active: uniqueActive,
+                      page: uniqueFound
+                    };
                 }"""
             )
             valid = {
                 "1m", "3m", "5m", "15m", "30m", "45m",
                 "1h", "2h", "4h", "6h", "12h", "1d", "1w",
             }
-            values = [str(v).lower().strip() for v in (values or [])]
-            values = [v for v in values if v in valid]
-            if len(set(values)) == 1:
-                return values[0]
-            # Multiple active timeframe values are ambiguous: fail closed.
+            active = [v for v in (result or {}).get("active", []) if v in valid]
+            page_values = [v for v in (result or {}).get("page", []) if v in valid]
+
+            if len(set(active)) == 1:
+                return active[0]
+            if len(set(active)) > 1:
+                return None
+
+            # Avoid trusting arbitrary title/aria labels. A page-level result is
+            # accepted only when exactly one value exists and it is not generated
+            # by the standard timeframe menu.
+            if len(set(page_values)) == 1:
+                return page_values[0]
         except Exception:
             pass
         return None
