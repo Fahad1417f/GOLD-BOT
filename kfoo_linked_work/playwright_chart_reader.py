@@ -87,6 +87,17 @@ class PlaywrightChartReader:
         except Exception as exc:
             return ChartRead(reason=f"READ_FAILED:{type(exc).__name__}:{exc}")
 
+    def read_live_kfoo(self):
+        """Read the explicitly verified live KFOO provider exposed by the chart page.
+
+        No OCR, screenshot inference, menu inference, or synthetic fallback is used.
+        The page must expose window.__GOLDBOT_KFOO__ with the strict V56 schema.
+        """
+        if self.page is None:
+            raise RuntimeError("TRADINGVIEW_PAGE_NOT_CONNECTED")
+        from tradingview_kfoo_provider_v56 import read_from_page
+        return read_from_page(self.page)
+
     def capture(self, name: str = "tradingview.png") -> str | None:
         if self.page is None:
             return None
@@ -131,7 +142,11 @@ class PlaywrightChartReader:
     @staticmethod
     def _parse_metadata(title: str, text: str, page=None):
         """Parse TradingView metadata without treating the timeframe menu as truth."""
-        symbol, timeframe = PlaywrightChartReader._parse_title(title)
+        symbol, title_timeframe = PlaywrightChartReader._parse_title(title)
+        # The TradingView title can contain a range/interval token that is not
+        # the active chart interval. Prefer explicit selected-interval DOM
+        # evidence; use the title only as a last-resort fallback.
+        timeframe = None
         body = text or ""
 
         upper = body.upper()
@@ -143,8 +158,11 @@ class PlaywrightChartReader:
             elif re.search(r"\bXAUUSD\b", upper):
                 symbol = "XAU/USD"
 
-        if timeframe is None and page is not None:
+        if page is not None:
             timeframe = PlaywrightChartReader._read_selected_timeframe(page)
+
+        if timeframe is None:
+            timeframe = title_timeframe
 
         if timeframe is None:
             matches = re.findall(r"(?<![\w])(?:1m|3m|5m|15m|30m|45m|1h|2h|4h|6h|12h|1d|1w)(?![\w])", body.lower())

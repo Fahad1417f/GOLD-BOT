@@ -4,7 +4,7 @@ from dataclasses import asdict, dataclass
 from typing import Any
 
 from head_shoulders_v56 import detect
-from verified_mtf_candle_pipeline_v56 import VerifiedMTFCandlePipelineV56
+from verified_mtf_candle_pipeline_v56 import VerifiedMTFCandlePipelineV56, VerifiedMTFRead
 
 
 @dataclass
@@ -50,8 +50,15 @@ class VerifiedHNSMTFV56:
     def __init__(self, api_key: str | None = None, timeout: float = 10.0):
         self.pipeline = VerifiedMTFCandlePipelineV56(api_key=api_key, timeout=timeout)
 
-    def read(self, outputsize: int = 100) -> VerifiedHNSMTFResult:
-        mtf = self.pipeline.read(outputsize=outputsize)
+    def read(
+        self,
+        outputsize: int = 100,
+        mtf_result: VerifiedMTFRead | None = None,
+    ) -> VerifiedHNSMTFResult:
+        # Reuse the already verified MTF snapshot when supplied. This is
+        # important because calling Twelve Data twice in one run can trigger
+        # HTTP 429 rate limiting and creates an inconsistent snapshot.
+        mtf = mtf_result if mtf_result is not None else self.pipeline.read(outputsize=outputsize)
         frames: dict[str, HNSFrameResult] = {}
         confirmed_dirs: list[str] = []
 
@@ -86,7 +93,11 @@ class VerifiedHNSMTFV56:
         direction = confirmed_dirs[0] if aligned else "neutral"
 
         if not verified:
-            bad = ";".join(f"{tf}:{frames[tf].reason}" for tf in self.TIMEFRAMES if not frames[tf].verified)
+            bad = ";".join(
+                f"{tf}:{frames[tf].reason}"
+                for tf in self.TIMEFRAMES
+                if not frames[tf].verified
+            )
             reason = f"HNS_MTF_INCOMPLETE:{bad}"
         elif aligned:
             reason = "VERIFIED_HNS_MTF_ALIGNED"
