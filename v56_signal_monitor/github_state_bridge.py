@@ -58,12 +58,34 @@ def parse_clock_state(t):
         }
     return result
 
+def runtime_health(t):
+    # Read the latest machine-readable V56 markers. This is the direct bridge
+    # from the local Vision/OCR monitor output to GitHub Pages.
+    checks={}
+    for key in ("CAPTURE_15M","ANALYSIS_15M","FRAME_15M_CAPTURE","FRAME_15M_VERIFY",
+                "FRAME_1H_CAPTURE","FRAME_1H_VERIFY","FRAME_4H_CAPTURE","FRAME_4H_VERIFY"):
+        checks[key]=latest(t,rf"{re.escape(key)}=([^\\s]+)","WAIT")
+    vision_pass = all(v.upper()=="PASS" for k,v in checks.items()
+                      if k.startswith(("CAPTURE_15M","ANALYSIS_15M","FRAME_15M_")))
+    errors = list(re.finditer(r"(?i)(Traceback|TypeError|ModuleNotFoundError|ConnectionError|ConnectionRefusedError)", t))
+    symbol_line=latest(t,r"TRADINGVIEW_SYMBOL_DETECTED:\s*([^|\\r\\n]+)","XAUUSD").strip()
+    manual_tf=latest(t,r"MANUAL_TIMEFRAME_ACTIVE:\s*([^\\s]+)","15m")
+    return {
+        "checks":checks,
+        "vision_ocr":"PASS" if vision_pass else "WAIT",
+        "recent_errors":len(errors),
+        "symbol_source":symbol_line,
+        "manual_timeframe":manual_tf,
+    }
+
 def parse_log(t):
-    s={"agent_status":"ONLINE","execution":"OFF","symbol":"XAUUSD","timeframe":"15m",
+    rh=runtime_health(t)
+    s={"agent_status":"ONLINE","execution":"OFF","symbol":rh["symbol_source"] or "XAUUSD","timeframe":rh["manual_timeframe"] or "15m",
        "direction":latest(t,r"DIRECTION_15M=([^\s]+)","neutral"),"confidence":0,"level":"WAIT","score":0,
        "gravity":{"4h":latest(t,r"DIRECTION_4H=([^\s]+)","unknown"),"1h":latest(t,r"DIRECTION_1H=([^\s]+)","unknown")},
        "timing":{"5m":latest(t,r"DIRECTION_5M=([^\s]+)","unknown"),"3m":latest(t,r"DIRECTION_3M=([^\s]+)","unknown")},
        "candle_clock":parse_clock_state(t),
+       "runtime_health":rh,
        "kfoo":{"table":"—","tf_agg":latest(t,r"KFOO_TF_AGG_15M=([^\r\n]+)","—"),"ind_agg":latest(t,r"KFOO_IND_AGG_15M=([^\r\n]+)","—"),"active":latest(t,r"KFOO_ACTIVE_15M=([^\s]+)","—"),"score":"—","indicators":{}},
        "reasons":[],"updated_at":time.time(),"source":"GOLD-BOT V56 local agent -> GitHub state bridge"}
     if re.search(r"KFOO_TABLE_(4H|1H|15M)=PASS",t,re.I): s["kfoo"]["table"]="PASS"
