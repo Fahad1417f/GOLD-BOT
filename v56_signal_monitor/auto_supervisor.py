@@ -2,7 +2,7 @@ from __future__ import annotations
 import json, os, subprocess, time
 from pathlib import Path
 from datetime import datetime, timezone
-from self_healing import diagnose, write_proposal, append
+from self_healing import diagnose, write_proposal, append\nfrom auto_developer import evaluate as evaluate_development
 
 ROOT=Path(os.getenv("GOLDBOT_ROOT", Path(__file__).resolve().parents[1])).resolve()
 BUILD=ROOT/"v56_build"
@@ -29,7 +29,7 @@ def launch_monitor():
     return subprocess.Popen(["cmd.exe","/c",str(bat)],cwd=str(BUILD),creationflags=getattr(subprocess,"CREATE_NEW_PROCESS_GROUP",0))
 
 def main():
-    write_state(status="STARTING",last_error=None,restarts=0,repair="NONE",development="WATCHING")
+    write_state(status="STARTING",last_error=None,restarts=0,repair="NONE",development=development_status)\n    try:\n        evaluate_development()\n    except Exception as e:\n        append("DEVELOPMENT_EVALUATION_ERROR="+type(e).__name__+":"+str(e))
     proc=None; restarts=0; last_size=-1; stale_since=None
     while True:
         text=read_log()
@@ -40,7 +40,7 @@ def main():
             if proc and proc.poll() is None:
                 proc.terminate()
                 proc=None
-            write_state(status="SAFE_MODE",last_error=diag["detail"],restarts=restarts,repair="QUARANTINE_AND_PROPOSE",development="PROPOSAL_ONLY")
+            write_state(status="SAFE_MODE",last_error=diag["detail"],restarts=restarts,repair="QUARANTINE_AND_PROPOSE",development=development_status)
             time.sleep(INTERVAL)
             continue
         if proc is None or proc.poll() is not None:
