@@ -4,7 +4,7 @@ from dataclasses import asdict, dataclass
 from typing import Any
 
 from head_shoulders_v56 import detect
-from verified_mtf_candle_pipeline_v56 import VerifiedMTFCandlePipelineV56
+from verified_mtf_candle_pipeline_v56 import VerifiedMTFCandlePipelineV56, VerifiedMTFRead
 
 
 @dataclass
@@ -50,8 +50,11 @@ class VerifiedHNSMTFV56:
     def __init__(self, api_key: str | None = None, timeout: float = 10.0):
         self.pipeline = VerifiedMTFCandlePipelineV56(api_key=api_key, timeout=timeout)
 
-    def read(self, outputsize: int = 100) -> VerifiedHNSMTFResult:
-        mtf = self.pipeline.read(outputsize=outputsize)
+    def read(self, outputsize: int = 100, mtf: VerifiedMTFRead | None = None) -> VerifiedHNSMTFResult:
+        # Reuse an already verified MTF read when supplied. This prevents a second
+        # batch of Twelve Data requests in the same monitor cycle and avoids
+        # avoidable HTTP 429 rate-limit failures.
+        mtf = mtf if mtf is not None else self.pipeline.read(outputsize=outputsize)
         frames: dict[str, HNSFrameResult] = {}
         confirmed_dirs: list[str] = []
 

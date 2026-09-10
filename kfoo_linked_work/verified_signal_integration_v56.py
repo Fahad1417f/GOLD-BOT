@@ -21,8 +21,10 @@ class VerifiedSignalIntegrationV56:
         self.hns = VerifiedHNSMTFV56(api_key=api_key, timeout=timeout)
 
     def read_verified_inputs(self, outputsize: int = 100) -> dict[str, Any]:
+        # One Twelve Data MTF fetch per monitor cycle. H&S consumes the exact
+        # verified candles already read instead of issuing a duplicate batch.
         mtf = self.mtf.read(outputsize=outputsize)
-        hns = self.hns.read(outputsize=outputsize)
+        hns = self.hns.read(outputsize=outputsize, mtf=mtf)
         return {"mtf": mtf.to_dict(), "hns": hns.to_dict()}
 
     def promote(self, analysis: dict[str, dict], timing: dict[str, Any] | None = None,
