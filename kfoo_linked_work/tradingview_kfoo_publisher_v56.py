@@ -66,7 +66,7 @@ def publish(payload: dict) -> None:
               || document.createElement('script');
           marker.id = '__goldbot_kfoo_bridge_v56__';
           marker.type = 'application/json';
-          marker.setAttribute('data-goldbot-kfoo', 'true');
+          marker.setAttribute('data-goldbot-kfoo', JSON.stringify(payload));
           marker.textContent = JSON.stringify(payload);
           if (!marker.parentNode) document.documentElement.appendChild(marker);
         }""",
