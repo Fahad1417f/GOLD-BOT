@@ -38,7 +38,12 @@ def launch_monitor():
     build=resolve_build()
     if build is None: return None
     bat=build/"run_v56_overnight_readonly.bat"
-    return subprocess.Popen(["cmd.exe","/c",str(bat)],cwd=str(build),creationflags=getattr(subprocess,"CREATE_NEW_PROCESS_GROUP",0))
+    # Capture the real monitor stdout/stderr into the supervisor log so health,
+    # KFOO and signal tracking are based on actual runtime output.
+    log_handle=open(LOG,"a",encoding="utf-8",errors="ignore")
+    return subprocess.Popen(["cmd.exe","/c",str(bat)],cwd=str(build),
+        stdout=log_handle,stderr=subprocess.STDOUT,
+        creationflags=getattr(subprocess,"CREATE_NEW_PROCESS_GROUP",0))
 
 def main():
     proc=None
@@ -66,6 +71,7 @@ def main():
         if diag["class"]=="CODE_INTEGRATION_ERROR":
             if proc and proc.poll() is None:
                 proc.terminate()
+                proc.wait(timeout=10)
                 proc=None
             write_state(status="SAFE_MODE",last_error=diag["detail"],restarts=restarts,repair="QUARANTINE_AND_PROPOSE",development=development_status)
             time.sleep(INTERVAL)
