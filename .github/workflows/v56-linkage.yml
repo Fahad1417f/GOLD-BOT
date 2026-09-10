@@ -1,0 +1,22 @@
+name: V56 linkage checks
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  python-checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install reader dependency
+        run: python -m pip install -r requirements.txt
+      - name: Compile
+        run: python -m py_compile kfoo_linked_work/*.py site_server.py
+      - name: H&S tests
+        run: python kfoo_linked_work/test_head_shoulders_v56.py
+      - name: Playwright reader tests
+        run: PYTHONPATH=kfoo_linked_work python kfoo_linked_work/test_playwright_chart_reader.py
