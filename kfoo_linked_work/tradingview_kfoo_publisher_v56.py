@@ -15,7 +15,7 @@ Safety:
 
 import json
 import os
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
 from playwright.sync_api import sync_playwright
@@ -119,4 +119,4 @@ class Handler(BaseHTTPRequestHandler):
 if __name__ == "__main__":
     connect_page()
     audit("START", f"host={HOST} port={PORT}")
-    ThreadingHTTPServer((HOST, PORT), Handler).serve_forever()
+    HTTPServer((HOST, PORT), Handler).serve_forever()
