@@ -18,9 +18,25 @@ PUBLISH_URL = os.getenv("GOLDBOT_KFOO_PUBLISH_URL", "http://127.0.0.1:8765/publi
 
 
 def _load_agent():
-    agent_dir = Path(os.getenv("GOLDBOT_LIVE_AGENT_DIR", Path(__file__).resolve().parent)).resolve()
-    if str(agent_dir) not in sys.path:
-        sys.path.insert(0, str(agent_dir))
+    agent_dir = Path(
+        os.getenv("GOLDBOT_LIVE_AGENT_DIR", Path(__file__).resolve().parent)
+    ).resolve()
+    # The live agent is an existing legacy package, so its sibling modules
+    # must come from the SAME package build. Never mix arbitrary versions.
+    support_dir = Path(
+        os.getenv("GOLDBOT_LIVE_AGENT_SUPPORT_DIR", str(agent_dir))
+    ).resolve()
+    required = ("visual_engine.py", "kfoo_table.py", "kfoo_direction.py")
+    missing = [name for name in required if not (support_dir / name).is_file()]
+    if missing:
+        raise RuntimeError(
+            "LIVE_AGENT_SUPPORT_INCOMPLETE:"
+            + ",".join(missing)
+            + f":dir={support_dir}"
+        )
+    for p in (support_dir, agent_dir):
+        if str(p) not in sys.path:
+            sys.path.insert(0, str(p))
     import live_vision_agent_fixed as agent
     return agent
 
