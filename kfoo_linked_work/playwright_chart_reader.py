@@ -130,13 +130,7 @@ class PlaywrightChartReader:
 
     @staticmethod
     def _parse_metadata(title: str, text: str, page=None):
-        """Parse TradingView metadata from title and visible DOM text.
-
-        Timeframe detection is deliberately fail-closed: the reader accepts a
-        timeframe only from an explicit active/selected control, a page-level
-        selected-timeframe metadata attribute, or an unambiguous standalone
-        body token. The mere presence of the timeframe menu is not evidence.
-        """
+        """Parse TradingView metadata without treating the timeframe menu as truth."""
         symbol, timeframe = PlaywrightChartReader._parse_title(title)
         body = text or ""
 
@@ -161,7 +155,10 @@ class PlaywrightChartReader:
 
     @staticmethod
     def _read_selected_timeframe(page):
-        """Read the active TradingView interval from explicit DOM/page state."""
+        """Read the selected chart interval from explicit metadata or visible toolbar state.
+
+        This method is read-only. It never clicks or changes the TradingView chart.
+        """
         try:
             result = page.evaluate(
                 r"""() => {
@@ -177,34 +174,62 @@ class PlaywrightChartReader:
                       return null;
                     };
 
-                    const found = [];
-
-                    // 1) Page-level attributes / state. These are more specific
-                    // than the visible menu because they describe the current chart.
-                    const pageNodes = Array.from(document.querySelectorAll(
-                      'body, [data-testid], [data-name], [data-role], [data-value], [aria-label], [title]'
-                    ));
-                    for (const n of pageNodes) {
-                      const attrs = ['data-timeframe','data-interval','data-resolution','data-value','aria-label','title'];
-                      for (const attr of attrs) {
-                        const v = normalize(n.getAttribute(attr));
-                        if (v && attr !== 'data-value') found.push(v);
+                    const attrs = [];
+                    const metadataSelectors = [
+                      '[data-timeframe]', '[data-interval]', '[data-resolution]',
+                      'meta[name="chart-timeframe"]', 'meta[name="timeframe"]',
+                      'meta[property="chart:timeframe"]'
+                    ];
+                    for (const n of document.querySelectorAll(metadataSelectors.join(','))) {
+                      const vals = [
+                        n.getAttribute('data-timeframe'),
+                        n.getAttribute('data-interval'),
+                        n.getAttribute('data-resolution'),
+                        n.getAttribute('content')
+                      ];
+                      for (const v of vals) {
+                        const tf = normalize(v);
+                        if (tf) attrs.push(tf);
                       }
                     }
 
-                    // 2) Explicit active/selected controls. We inspect the
-                    // selected node's own attributes/text only.
                     const activeSelectors = [
                       '[aria-selected="true"]',
                       '[aria-pressed="true"]',
                       '[data-state="active"]',
                       '[data-selected="true"]',
+                      '[aria-current="true"]',
+                      '[aria-current="page"]',
                       '.selected',
                       '.active'
                     ];
-                    const activeNodes = Array.from(document.querySelectorAll(activeSelectors.join(',')));
                     const active = [];
-                    for (const n of activeNodes) {
+                    for (const n of document.querySelectorAll(activeSelectors.join(','))) {
+                      const candidates = [
+                        n.getAttribute('data-timeframe'),
+                        n.getAttribute('data-interval'),
+                        n.getAttribute('data-resolution'),
+                        n.getAttribute('data-value'),
+                        n.getAttribute('data-key'),
+                        n.getAttribute('aria-label'),
+                        n.getAttribute('title'),
+                        n.textContent
+                      ];
+                      for (const c of candidates) {
+                        const tf = normalize(c);
+                        if (tf) active.push(tf);
+                      }
+                    }
+
+                    // TradingView often renders timeframe buttons without exposing
+                    // aria-selected. Inspect visible button-like controls, but only
+                    // accept one whose own accessible label/value is an exact tf.
+                    const toolbar = [];
+                    const controlNodes = Array.from(document.querySelectorAll('button,[role="button"],[role="tab"]'));
+                    for (const n of controlNodes) {
+                      if (n.offsetParent === null) continue;
+                      const rect = n.getBoundingClientRect();
+                      if (!rect.width || !rect.height) continue;
                       const candidates = [
                         n.getAttribute('data-timeframe'),
                         n.getAttribute('data-interval'),
@@ -214,19 +239,16 @@ class PlaywrightChartReader:
                         n.getAttribute('title'),
                         n.textContent
                       ];
-                      for (const candidate of candidates) {
-                        const v = normalize(candidate);
-                        if (v) active.push(v);
+                      for (const c of candidates) {
+                        const tf = normalize(c);
+                        if (tf) toolbar.push({tf, text:(n.textContent || '').trim(), aria:n.getAttribute('aria-label') || '', title:n.getAttribute('title') || '', rect:{x:rect.x,y:rect.y,w:rect.width,h:rect.height}});
                       }
                     }
 
-                    // Return explicit active state first. If there is exactly one
-                    // page-level metadata value, it is also safe to use.
-                    const uniqueActive = [...new Set(active)];
-                    const uniqueFound = [...new Set(found)];
                     return {
-                      active: uniqueActive,
-                      page: uniqueFound
+                      active: [...new Set(active)],
+                      metadata: [...new Set(attrs)],
+                      toolbar
                     };
                 }"""
             )
@@ -235,18 +257,32 @@ class PlaywrightChartReader:
                 "1h", "2h", "4h", "6h", "12h", "1d", "1w",
             }
             active = [v for v in (result or {}).get("active", []) if v in valid]
-            page_values = [v for v in (result or {}).get("page", []) if v in valid]
+            metadata = [v for v in (result or {}).get("metadata", []) if v in valid]
 
             if len(set(active)) == 1:
                 return active[0]
             if len(set(active)) > 1:
                 return None
+            if len(set(metadata)) == 1:
+                return metadata[0]
 
-            # Avoid trusting arbitrary title/aria labels. A page-level result is
-            # accepted only when exactly one value exists and it is not generated
-            # by the standard timeframe menu.
-            if len(set(page_values)) == 1:
-                return page_values[0]
+            # Last DOM-only fallback: identify timeframe controls from the toolbar
+            # and use the single control whose DOM text/accessibility metadata is
+            # both exact and positioned within the upper chart toolbar band.
+            toolbar = result.get("toolbar", []) if isinstance(result, dict) else []
+            top_band = [x for x in toolbar if x.get("rect", {}).get("y", 9999) < 180]
+            # De-duplicate repeated attributes for the same visual control.
+            visual = {}
+            for item in top_band:
+                r = item.get("rect", {})
+                key = (item.get("tf"), round(r.get("x", 0), 1), round(r.get("y", 0), 1))
+                visual[key] = item
+            candidates = list(visual.values())
+            # A single exact candidate is safe. Multiple controls with different
+            # timeframes remain ambiguous and must fail closed.
+            tfs = {x["tf"] for x in candidates}
+            if len(tfs) == 1 and candidates:
+                return next(iter(tfs))
         except Exception:
             pass
         return None
