@@ -52,6 +52,54 @@ class ChartController:
         m=re.search(r"\b([A-Z]{2,10})[/:-]([A-Z]{2,10})\b",(title or '').upper()); return f"{m.group(1)}/{m.group(2)}" if m else None
 
     def set_timeframe(self, timeframe):
-        if timeframe not in TIMEFRAME_KEYS: raise ValueError(f"unsupported_timeframe:{timeframe}")
-        if self.page is None: raise RuntimeError("NOT_CONNECTED")
-        raise NotImplementedError("CHART_ONLY_ACTION_REQUIRES_VERIFIED_ADAPTER")
+        """Set a TradingView interval through the connected chart and verify it.
+
+        The target is selected from the live toolbar DOM first. We only click a
+        uniquely identified interval control; otherwise we fail closed. A
+        keyboard fallback is used only when explicitly enabled.
+        """
+        if timeframe not in TIMEFRAME_KEYS:
+            raise ValueError(f"unsupported_timeframe:{timeframe}")
+        if self.page is None:
+            raise RuntimeError("NOT_CONNECTED")
+
+        target = TIMEFRAME_KEYS[timeframe]
+        candidates = self.page.evaluate(
+            """(target) => {
+              const norm = s => (s || '').toString().trim().toLowerCase();
+              const wanted = new Set([target, target === 'D' ? '1d' : '', target === 'W' ? '1w' : ''].filter(Boolean));
+              const nodes = [...document.querySelectorAll('button,[role="button"],div[data-value],div[data-interval],div[data-resolution]')];
+              const out = [];
+              for (const el of nodes) {
+                const text = norm(el.textContent);
+                const aria = norm(el.getAttribute('aria-label'));
+                const title = norm(el.getAttribute('title'));
+                const value = norm(el.getAttribute('data-value'));
+                const interval = norm(el.getAttribute('data-interval'));
+                const resolution = norm(el.getAttribute('data-resolution'));
+                const hay = [text, aria, title, value, interval, resolution];
+                const match = hay.some(v => wanted.has(v) || v === target.toLowerCase());
+                if (!match) continue;
+                const r = el.getBoundingClientRect();
+                if (!r.width || !r.height) continue;
+                out.push({x:r.x+r.width/2,y:r.y+r.height/2,text,aria,title,value,interval,resolution});
+              }
+              return out;
+            }""",
+            target,
+        )
+        # Deduplicate the same DOM control represented by multiple attributes.
+        unique = {(round(c['x'],1), round(c['y'],1)): c for c in candidates}
+        candidates = list(unique.values())
+        if len(candidates) != 1:
+            raise RuntimeError(f"TIMEFRAME_CONTROL_AMBIGUOUS:{timeframe}:candidates={len(candidates)}")
+
+        c = candidates[0]
+        self.page.mouse.click(c['x'], c['y'])
+        self.page.wait_for_timeout(int(self.verify_delay * 1000))
+        state = self.state()
+        if state.timeframe != timeframe:
+            raise RuntimeError(
+                f"TIMEFRAME_VERIFY_FAILED:requested={timeframe}:detected={state.timeframe}:title={state.title}"
+            )
+        return state
