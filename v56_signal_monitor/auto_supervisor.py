@@ -6,7 +6,7 @@ from self_healing import diagnose, write_proposal, append
 from auto_developer import evaluate as evaluate_development
 
 ROOT=Path(os.getenv("GOLDBOT_ROOT", Path(__file__).resolve().parents[1])).resolve()
-BUILD=ROOT/"v56_build"
+BUILD=Path(os.getenv("GOLDBOT_BUILD_PATH",ROOT/"v56_build")).resolve()
 LOG=Path(os.getenv("GOLDBOT_MONITOR_LOG", ROOT/"v56_monitor.log"))
 STATE=ROOT/"supervisor_state.json"
 INTERVAL=float(os.getenv("GOLDBOT_SUPERVISOR_INTERVAL","15"))
@@ -25,10 +25,20 @@ def read_log():
     try: return LOG.read_text(encoding="utf-8",errors="ignore")
     except FileNotFoundError: return ""
 
+def resolve_build():
+    candidates=[BUILD]
+    parent=ROOT.parent
+    for p in sorted(parent.glob("GOLD_BOT_V56*")):
+        if (p/"v56_build"/"run_v56_overnight_readonly.bat").exists(): candidates.append(p/"v56_build")
+    for p in candidates:
+        if (p/"run_v56_overnight_readonly.bat").exists(): return p
+    return None
+
 def launch_monitor():
-    bat=BUILD/"run_v56_overnight_readonly.bat"
-    if not bat.exists(): return None
-    return subprocess.Popen(["cmd.exe","/c",str(bat)],cwd=str(BUILD),creationflags=getattr(subprocess,"CREATE_NEW_PROCESS_GROUP",0))
+    build=resolve_build()
+    if build is None: return None
+    bat=build/"run_v56_overnight_readonly.bat"
+    return subprocess.Popen(["cmd.exe","/c",str(bat)],cwd=str(build),creationflags=getattr(subprocess,"CREATE_NEW_PROCESS_GROUP",0))
 
 def main():
     proc=None
@@ -67,7 +77,7 @@ def main():
                 continue
             proc=launch_monitor()
             if proc is None:
-                write_state(status="SAFE_MODE",last_error="V56_BUILD_NOT_FOUND",restarts=restarts,repair="BUILD_MISSING",development=development_status)
+                write_state(status="SAFE_MODE",last_error="V56_BUILD_NOT_FOUND_OR_UNRESOLVED",restarts=restarts,repair="BUILD_MISSING",development=development_status)
             else:
                 restarts+=1
                 append("REPAIR_RESULT=MONITOR_RESTART_PASS")
