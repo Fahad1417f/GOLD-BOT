@@ -24,20 +24,11 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from playwright_chart_reader import read_tradingview_chart  # noqa: E402
+from playwright_chart_reader import PlaywrightChartReader  # noqa: E402
 from verified_signal_integration_v56 import VerifiedSignalIntegrationV56  # noqa: E402
 from signal_engine_v56 import promote  # noqa: E402
 
-
 REQUIRED_TFS = ("4h", "1h", "15m", "5m", "3m")
-
-
-def _direction(v: object) -> str | None:
-    if v in ("long", "bullish"):
-        return "long"
-    if v in ("short", "bearish"):
-        return "short"
-    return None
 
 
 def smoke_analysis(direction: str = "long") -> dict:
@@ -93,10 +84,7 @@ def load_json_env(name: str) -> dict:
 
 
 def assert_execution_off() -> None:
-    forbidden = {
-        "GOLDBOT_REAL_TRADING", "GOLDBOT_DEMO_TRADING", "GOLDBOT_FAST_TRADE",
-    }
-    for key in forbidden:
+    for key in ("GOLDBOT_REAL_TRADING", "GOLDBOT_DEMO_TRADING", "GOLDBOT_FAST_TRADE"):
         if os.getenv(key, "").strip().lower() in {"1", "true", "yes", "on"}:
             raise RuntimeError(f"FAIL_CLOSED_EXECUTION_FLAG={key}")
 
@@ -110,7 +98,9 @@ def main() -> int:
     assert_execution_off()
     print("E2E_EXECUTION=OFF")
 
-    chart = read_tradingview_chart()
+    reader = PlaywrightChartReader()
+    chart_obj = reader.connect()
+    chart = chart_obj.to_dict()
     if not chart.get("verified") or chart.get("symbol") != "XAU/USD":
         raise RuntimeError(f"TRADINGVIEW_IDENTITY_NOT_VERIFIED: {chart}")
     if not chart.get("timeframe"):
@@ -125,7 +115,7 @@ def main() -> int:
     hns = verified_inputs["hns"]
     if not mtf.get("verified") or not mtf.get("all_required_available"):
         raise RuntimeError(f"MTF_NOT_VERIFIED: {mtf.get('reason')}")
-    missing = [tf for tf in REQUIRED_TFS if not (mtf.get("frames", {}).get(tf, {}).get("verified"))]
+    missing = [tf for tf in REQUIRED_TFS if not mtf.get("frames", {}).get(tf, {}).get("verified")]
     if missing:
         raise RuntimeError(f"MTF_MISSING={','.join(missing)}")
     print("E2E_MTF_OHLC=PASS 4h,1h,15m,5m,3m")
@@ -146,7 +136,6 @@ def main() -> int:
         print("E2E_KFOO=LIVE_INPUT")
 
     sig = promote(analysis, timing=timing, verified_hns_mtf=hns_for_promotion)
-    sig_data = sig.to_dict()
     print(f"E2E_SIGNAL=PASS level={sig.level} direction={sig.direction} score={sig.score:.2f} entry_ready={sig.entry_ready}")
 
     payload = {
