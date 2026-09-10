@@ -118,8 +118,9 @@ class PlaywrightChartReader:
 
         TradingView commonly exposes titles such as ``XAUUSD 4,411`` while
         the visible chart identifies the instrument as ``Gold Spot / U.S.
-        Dollar``. Timeframe buttons are inspected for an explicitly selected
-        state before falling back to a conservative visible-text heuristic.
+        Dollar``. Timeframe detection is accepted only from an explicitly
+        selected/active DOM control; the reader never treats the presence of
+        the timeframe menu as proof of the selected interval.
         """
         symbol, timeframe = PlaywrightChartReader._parse_title(title)
         body = text or ""
@@ -138,8 +139,8 @@ class PlaywrightChartReader:
 
         if timeframe is None:
             # Only accept an unambiguous standalone timeframe token. This is
-            # deliberately conservative because the body also contains the
-            # full list of timeframe buttons.
+            # deliberately conservative because the body normally contains
+            # the full list of timeframe buttons.
             matches = re.findall(r"(?<![\w])(?:1m|3m|5m|15m|30m|45m|1h|2h|4h|6h|12h|1d|1w)(?![\w])", body.lower())
             if len(set(matches)) == 1:
                 timeframe = matches[0]
@@ -148,32 +149,63 @@ class PlaywrightChartReader:
 
     @staticmethod
     def _read_selected_timeframe(page):
-        """Find a selected TradingView timeframe control when exposed by DOM."""
+        """Find the actually selected TradingView timeframe control.
+
+        Only nodes carrying an explicit active/selected state are considered.
+        In particular, bare ``data-value`` nodes are NOT scanned because
+        TradingView renders every timeframe option in the DOM; doing so can
+        incorrectly return the first option (often 1m).
+        """
         try:
             values = page.evaluate(
-                """() => {
-                    const nodes = Array.from(document.querySelectorAll(
-                      '[aria-selected="true"], [aria-pressed="true"], [data-value]'
-                    ));
+                r"""() => {
+                    const activeSelectors = [
+                      '[aria-selected="true"]',
+                      '[aria-pressed="true"]',
+                      '[data-state="active"]',
+                      '[data-selected="true"]',
+                      '.selected',
+                      '.active'
+                    ];
+                    const nodes = Array.from(document.querySelectorAll(activeSelectors.join(',')));
                     const out = [];
-                    const re = /^(1m|3m|5m|15m|30m|45m|1h|2h|4h|6h|12h|1d|1w)$/i;
+                    const tfRe = /^(1m|3m|5m|15m|30m|45m|1h|2h|4h|6h|12h|1d|1w)$/i;
+                    const minRe = /^(1|3|5|15|30|45)\s*(min|mins|minute|minutes)$/i;
+                    const hourRe = /^(1|2|4|6|12)\s*(h|hr|hrs|hour|hours)$/i;
+                    const normalize = (value) => {
+                      const s = (value || '').trim();
+                      let m = s.match(tfRe);
+                      if (m) return m[1].toLowerCase();
+                      m = s.match(minRe);
+                      if (m) return `${m[1]}m`;
+                      m = s.match(hourRe);
+                      if (m) return `${m[1]}h`;
+                      return null;
+                    };
                     for (const n of nodes) {
-                      const candidates = [n.getAttribute('data-value'), n.getAttribute('aria-label'), n.getAttribute('title'), n.textContent];
-                      for (const v of candidates) {
-                        const s = (v || '').trim();
-                        const m = s.match(re) || s.match(/^(1|3|5|15|30|45)\s*(min|minutes)$/i) || s.match(/^(1|2|4|6|12)\s*(h|hour|hours)$/i);
-                        if (m) out.push(s.toLowerCase());
+                      const candidates = [
+                        n.getAttribute('data-value'),
+                        n.getAttribute('aria-label'),
+                        n.getAttribute('title'),
+                        n.textContent
+                      ];
+                      for (const value of candidates) {
+                        const normalized = normalize(value);
+                        if (normalized) out.push(normalized);
                       }
                     }
-                    return out;
+                    return [...new Set(out)];
                 }"""
             )
-            for value in values or []:
-                v = str(value).lower().strip()
-                v = re.sub(r"\s*(minutes|min)$", "m", v)
-                v = re.sub(r"\s*(hours|hour)$", "h", v)
-                if v in {"1m","3m","5m","15m","30m","45m","1h","2h","4h","6h","12h","1d","1w"}:
-                    return v
+            valid = {
+                "1m", "3m", "5m", "15m", "30m", "45m",
+                "1h", "2h", "4h", "6h", "12h", "1d", "1w",
+            }
+            values = [str(v).lower().strip() for v in (values or [])]
+            values = [v for v in values if v in valid]
+            if len(set(values)) == 1:
+                return values[0]
+            # Multiple active timeframe values are ambiguous: fail closed.
         except Exception:
             pass
         return None
