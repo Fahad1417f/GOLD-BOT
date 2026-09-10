@@ -7,6 +7,9 @@ set GOLDBOT_MONITOR_LOG=%~dp0v56_monitor.log
 set GOLDBOT_REPO=Fahad1417f/GOLD-BOT
 set GOLDBOT_STATE_PATH=website_state.json
 set GOLDBOT_BRANCH=main
+set GOLDBOT_DEVELOPMENT_INTERVAL=300
+set GOLDBOT_SUPERVISOR_INTERVAL=15
+set GOLDBOT_STALE_SECONDS=180
 if exist "%~dp0.venv\Scripts\python.exe" (
   set "PYTHON=%~dp0.venv\Scripts\python.exe"
 ) else if exist "%~dp0..\GOLD-BOT_APPROVED_WINDOWS\.venv\Scripts\python.exe" (
