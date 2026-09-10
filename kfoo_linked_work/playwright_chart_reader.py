@@ -87,6 +87,17 @@ class PlaywrightChartReader:
         except Exception as exc:
             return ChartRead(reason=f"READ_FAILED:{type(exc).__name__}:{exc}")
 
+    def read_live_kfoo(self):
+        """Read the explicitly verified live KFOO provider exposed by the chart page.
+
+        No OCR, screenshot inference, menu inference, or synthetic fallback is used.
+        The page must expose window.__GOLDBOT_KFOO__ with the strict V56 schema.
+        """
+        if self.page is None:
+            raise RuntimeError("TRADINGVIEW_PAGE_NOT_CONNECTED")
+        from tradingview_kfoo_provider_v56 import read_from_page
+        return read_from_page(self.page)
+
     def capture(self, name: str = "tradingview.png") -> str | None:
         if self.page is None:
             return None
