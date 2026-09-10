@@ -55,6 +55,17 @@ def test_toolbar_single_numeric_timeframe_can_be_used():
     ) == '15m'
 
 
+def test_explicit_class_state_can_be_used():
+    assert PlaywrightChartReader._read_selected_timeframe(
+        FakePage({
+            'controls': [
+                {'tf': '15m', 'text': '15', 'ariaPressed': None, 'ariaSelected': None, 'dataState': None, 'className': 'toolbar-button is-selected'}
+            ],
+            'metadata': [],
+        })
+    ) == '15m'
+
+
 def test_xauusd_title_has_no_fake_timeframe():
     symbol, timeframe = PlaywrightChartReader._parse_title('XAUUSD 4,411.735 ▲ +0.22%')
     assert symbol == 'XAU/USD'
@@ -73,6 +84,7 @@ if __name__ == '__main__':
     test_ambiguous_active_timeframes_fail_closed()
     test_page_level_single_timeframe_can_be_used()
     test_toolbar_single_numeric_timeframe_can_be_used()
+    test_explicit_class_state_can_be_used()
     test_xauusd_title_has_no_fake_timeframe()
     test_timeframe_normalization()
     print('PLAYWRIGHT_ACTIVE_TIMEFRAME_TEST=PASS')
