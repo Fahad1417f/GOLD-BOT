@@ -8,6 +8,7 @@ publisher. No synthetic KFOO values are created.
 
 import os
 import sys
+import subprocess
 from pathlib import Path
 
 import requests
@@ -102,8 +103,23 @@ def _publisher_health() -> dict:
     return body
 
 
+def _start_timeframe_controller():
+    if os.getenv("GOLDBOT_TF_CONTROLLER", "1").strip().lower() in {"0", "off", "false", "no"}:
+        print("TRADINGVIEW_TF_CONTROLLER=OFF", flush=True)
+        return None
+    controller = Path(__file__).resolve().with_name("tradingview_timeframe_controller_v56.py")
+    if not controller.is_file():
+        raise RuntimeError(f"TRADINGVIEW_TF_CONTROLLER_MISSING:{controller}")
+    env = os.environ.copy()
+    env["PYTHONIOENCODING"] = "utf-8"
+    proc = subprocess.Popen([sys.executable, str(controller)], env=env)
+    print(f"TRADINGVIEW_TF_CONTROLLER=ON pid={proc.pid} frames={','.join(REQUIRED_TFS)}", flush=True)
+    return proc
+
+
 def main() -> int:
     agent = _load_agent()
+    tf_controller = _start_timeframe_controller()
     original = agent.publish_live_kfoo_markers
 
     def wired_publish(kfoo_table, now):
@@ -140,7 +156,15 @@ def main() -> int:
     entry = getattr(agent, "main", None)
     if not callable(entry):
         raise RuntimeError("LIVE_VISION_AGENT_MAIN_NOT_FOUND")
-    return int(entry() or 0)
+    try:
+        return int(entry() or 0)
+    finally:
+        if tf_controller is not None and tf_controller.poll() is None:
+            tf_controller.terminate()
+            try:
+                tf_controller.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                tf_controller.kill()
 
 
 if __name__ == "__main__":
