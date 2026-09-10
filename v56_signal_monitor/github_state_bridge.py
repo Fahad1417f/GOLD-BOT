@@ -13,6 +13,9 @@ LOG=Path(os.getenv("GOLDBOT_MONITOR_LOG",ROOT/"v56_monitor.log"))
 SUPERVISOR_STATE=ROOT/"supervisor_state.json"
 INTERVAL=float(os.getenv("GOLDBOT_PUBLISH_INTERVAL","10"))
 try:
+    import sys
+    _MONITOR_DIR=str(Path(__file__).resolve().parent)
+    if _MONITOR_DIR not in sys.path: sys.path.insert(0,_MONITOR_DIR)
     from virtual_trade_tracker import run as update_virtual_trades
 except Exception:
     update_virtual_trades=None
