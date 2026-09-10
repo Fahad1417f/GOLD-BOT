@@ -11,6 +11,7 @@ if str(ROOT / "kfoo_linked_work") not in sys.path:
 
 from playwright_chart_reader import PlaywrightChartReader
 from verified_signal_integration_v56 import VerifiedSignalIntegrationV56
+from tradingview_kfoo_dom_bridge_v56 import inspect_page
 
 REQUIRED_TFS = ("4h", "1h", "15m", "5m", "3m")
 LOG = Path(os.getenv("GOLDBOT_MONITOR_LOG", ROOT / "v56_monitor.log"))
@@ -63,25 +64,31 @@ def main() -> int:
     integration = VerifiedSignalIntegrationV56(
         api_key=os.getenv("TWELVEDATA_API_KEY") or os.getenv("TWELVE_DATA_API_KEY")
     )
-    inputs = integration.read_verified_inputs(
-        outputsize=int(os.getenv("GOLDBOT_CANDLE_OUTPUTSIZE", "100"))
-    )
+    inputs = integration.read_verified_inputs(outputsize=int(os.getenv("GOLDBOT_CANDLE_OUTPUTSIZE", "100")))
     mtf = inputs["mtf"]
     hns = inputs["hns"]
 
     if not mtf.get("verified"):
         emit("MTF_OHLC=FAIL " + str(mtf.get("reason")))
+        reader.close()
         return 3
     emit("MTF_OHLC=PASS 4h,1h,15m,5m,3m")
 
     if not hns.get("verified"):
         emit("HNS=FAIL " + str(hns.get("reason")))
+        reader.close()
         return 4
     emit(f"HNS=PASS aligned={hns.get('aligned')} direction={hns.get('direction')}")
 
-    # Prefer the live, explicitly verified provider exposed by the TradingView
-    # page. Environment JSON remains available only as an upstream integration
-    # fallback and is never synthesized by this process.
+    # Diagnose the live page first so a missing KFOO publisher is explicit.
+    try:
+        probe = inspect_page(reader.page)
+        emit("KFOO_PROBE_SOURCE=" + str(probe.get("source", "none")))
+        if probe.get("payload") is not None:
+            emit("KFOO_PROBE=FOUND")
+    except Exception as exc:
+        emit("KFOO_PROBE=ERROR " + type(exc).__name__ + ":" + str(exc))
+
     try:
         analysis, timing = reader.read_live_kfoo()
         emit("KFOO_SOURCE=TRADINGVIEW_LIVE_PROVIDER")
@@ -91,6 +98,7 @@ def main() -> int:
             emit("KFOO_SOURCE=FAIL " + str(live_exc))
             emit("KFOO_MARKERS=NOT_PUBLISHED_SYNTHETIC_DATA_FORBIDDEN")
             emit("V56_READONLY=FAIL KFOO_SOURCE_NOT_CONFIGURED")
+            reader.close()
             return 5
         emit("KFOO_SOURCE=VERIFIED_UPSTREAM_INPUT")
         emit("KFOO_LIVE_PROVIDER=UNAVAILABLE reason=" + type(live_exc).__name__)
