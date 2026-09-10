@@ -2,7 +2,8 @@ from __future__ import annotations
 import json, os, subprocess, time
 from pathlib import Path
 from datetime import datetime, timezone
-from self_healing import diagnose, write_proposal, append\nfrom auto_developer import evaluate as evaluate_development
+from self_healing import diagnose, write_proposal, append
+from auto_developer import evaluate as evaluate_development
 
 ROOT=Path(os.getenv("GOLDBOT_ROOT", Path(__file__).resolve().parents[1])).resolve()
 BUILD=ROOT/"v56_build"
@@ -17,6 +18,7 @@ def now(): return datetime.now(timezone.utc).isoformat()
 
 def write_state(**extra):
     state={"supervisor":"ONLINE","safe_mode":SAFE_MODE,"execution":"OFF","updated_at":now(),**extra}
+    STATE.parent.mkdir(parents=True, exist_ok=True)
     STATE.write_text(json.dumps(state,ensure_ascii=False,indent=2),encoding="utf-8")
 
 def read_log():
@@ -29,11 +31,26 @@ def launch_monitor():
     return subprocess.Popen(["cmd.exe","/c",str(bat)],cwd=str(BUILD),creationflags=getattr(subprocess,"CREATE_NEW_PROCESS_GROUP",0))
 
 def main():
-    write_state(status="STARTING",last_error=None,restarts=0,repair="NONE",development=development_status)\n    try:\n        evaluate_development()\n    except Exception as e:\n        append("DEVELOPMENT_EVALUATION_ERROR="+type(e).__name__+":"+str(e))
-    proc=None; restarts=0; last_size=-1; stale_since=None
+    proc=None
+    restarts=0
+    last_size=-1
+    stale_since=None
+    write_state(status="STARTING",last_error=None,restarts=0,repair="NONE",development="WATCHING")
+    try:
+        dev=evaluate_development()
+        development_status=dev.get("status","UNKNOWN")
+    except Exception as e:
+        development_status="ERROR"
+        append("DEVELOPMENT_EVALUATION_ERROR="+type(e).__name__+":"+str(e))
     while True:
         text=read_log()
         diag=diagnose(text)
+        try:
+            dev=evaluate_development()
+            development_status=dev.get("status","UNKNOWN")
+        except Exception as e:
+            development_status="ERROR"
+            append("DEVELOPMENT_EVALUATION_ERROR="+type(e).__name__+":"+str(e))
         if diag["class"]!="NONE":
             write_proposal(diag)
         if diag["class"]=="CODE_INTEGRATION_ERROR":
@@ -45,24 +62,28 @@ def main():
             continue
         if proc is None or proc.poll() is not None:
             if restarts>=MAX_RESTARTS:
-                write_state(status="SAFE_MODE",last_error=diag["detail"] or "monitor_exit",restarts=restarts,repair="RESTART_LIMIT_REACHED",development="PROPOSAL_ONLY")
+                write_state(status="SAFE_MODE",last_error=diag["detail"] or "monitor_exit",restarts=restarts,repair="RESTART_LIMIT_REACHED",development=development_status)
                 time.sleep(INTERVAL)
                 continue
             proc=launch_monitor()
             if proc is None:
-                write_state(status="SAFE_MODE",last_error="V56_BUILD_NOT_FOUND",restarts=restarts,repair="BUILD_MISSING")
+                write_state(status="SAFE_MODE",last_error="V56_BUILD_NOT_FOUND",restarts=restarts,repair="BUILD_MISSING",development=development_status)
             else:
                 restarts+=1
                 append("REPAIR_RESULT=MONITOR_RESTART_PASS")
-                write_state(status="RUNNING",last_error=None,restarts=restarts,repair="RESTART_AND_RETEST",development="WATCHING")
+                write_state(status="RUNNING",last_error=None,restarts=restarts,repair="RESTART_AND_RETEST",development=development_status)
         else:
             size=len(text)
-            if size==last_size: stale_since=stale_since or time.time()
-            else: stale_since=None; last_size=size
+            if size==last_size:
+                stale_since=stale_since or time.time()
+            else:
+                stale_since=None
+                last_size=size
             if stale_since and time.time()-stale_since>STALE:
-                proc.terminate(); proc=None
+                proc.terminate()
+                proc=None
                 append("REPAIR_RESULT=STALE_RESTART")
-                write_state(status="RESTARTING",last_error="STALE_MONITOR_LOG",restarts=restarts,repair="STALE_RESTART")
+                write_state(status="RESTARTING",last_error="STALE_MONITOR_LOG",restarts=restarts,repair="STALE_RESTART",development=development_status)
         time.sleep(INTERVAL)
 
 if __name__=="__main__":
