@@ -45,7 +45,7 @@ def promote(analysis:dict[str,dict],timing:dict[str,Any]|None=None,verified_hns_
     g4,s4,r4=_stable_gravity(analysis,'4h'); g1,s1,r1=_stable_gravity(analysis,'1h')
     gravity_aligned=bool(g4 and g1 and g4==g1 and s4 and s1)
     hns_blocked,hns_reasons=_hns_gate(verified_hns_mtf,g4 if gravity_aligned else None); reasons.extend(hns_reasons)
-    if hns_blocked:return Signal('WAIT',g4 or 'neutral',0.20,reasons,setup_ready=False,entry_ready=False,timestamp_utc=datetime.now(timezone.utc).isoformat())
+    if hns_blocked:return Signal(level='WAIT',direction=g4 or 'neutral',score=0.20,reasons=reasons,setup_ready=False,entry_ready=False,timestamp_utc=datetime.now(timezone.utc).isoformat())
     leader=analysis.get('15m') or {}; linfo=leader.get('analysis') or {}
     ldir=_dir_from_bias(leader.get('active_kfoo')) or _dir_from_bias((linfo.get('kfoo_table_direction') or {}).get('bias')) or _dir_from_bias(linfo.get('direction'))
     table=linfo.get('kfoo_table') or {}; aggs=table.get('aggregates') or {}; tfagg=aggs.get('timeframes') or {}; indagg=aggs.get('indicators') or {}
@@ -55,14 +55,14 @@ def promote(analysis:dict[str,dict],timing:dict[str,Any]|None=None,verified_hns_
     reasons.append('4H+1H gravity aligned and stable' if gravity_aligned else f'gravity not aligned/stable (4H={g4}/{r4}, 1H={g1}/{r1})')
     reasons.append('15M leader agrees with gravity' if leader_aligned else f'15M leader not confirmed (leader={ldir}, activeKFOO={active15})')
     reasons.append(f'KFOO confirmed TF={tf_pct:.1f}% IND={ind_pct:.1f}%' if kfoo_quality else f'KFOO incomplete/weak TF={tf_pct:.1f}% IND={ind_pct:.1f}%')
-    if not gravity_aligned or not leader_aligned or not kfoo_quality:return Signal('WAIT',g4 or ldir or 'neutral',0.40 if gravity_aligned else 0.20,reasons,setup_ready=False,entry_ready=False,timestamp_utc=datetime.now(timezone.utc).isoformat())
-    if not bool(timing.get('leader_closed')):return Signal('STRONG_SETUP',g4,0.85,reasons+['waiting for 15M candle close'],setup_ready=True,entry_ready=False,timestamp_utc=datetime.now(timezone.utc).isoformat())
+    if not gravity_aligned or not leader_aligned or not kfoo_quality:return Signal(level='WAIT',direction=g4 or ldir or 'neutral',score=0.40 if gravity_aligned else 0.20,reasons=reasons,setup_ready=False,entry_ready=False,timestamp_utc=datetime.now(timezone.utc).isoformat())
+    if not bool(timing.get('leader_closed')):return Signal(level='STRONG_SETUP',direction=g4,score=0.85,reasons=reasons+['waiting for 15M candle close'],setup_ready=True,entry_ready=False,timestamp_utc=datetime.now(timezone.utc).isoformat())
     a5=analysis.get('5m') or {}; a3=analysis.get('3m') or {}
     d5=_dir_from_bias((a5.get('analysis') or {}).get('kfoo_table_direction',{}).get('bias')) or _dir_from_bias((a5.get('analysis') or {}).get('direction'))
     d3=_dir_from_bias((a3.get('analysis') or {}).get('kfoo_table_direction',{}).get('bias')) or _dir_from_bias((a3.get('analysis') or {}).get('direction'))
     entry=d5==g4 and d3==g4 and bool((a5.get('analysis') or {}).get('kfoo_table_detected')) and bool((a3.get('analysis') or {}).get('kfoo_table_detected'))
-    if entry:return Signal('STRONG_ENTRY',g4,0.95,reasons+['5M and 3M timing aligned'],setup_ready=True,entry_ready=True,timestamp_utc=datetime.now(timezone.utc).isoformat())
-    return Signal('STRONG_SETUP',g4,0.90,reasons+[f'timing not aligned (5M={d5}, 3M={d3})'],setup_ready=True,entry_ready=False,timestamp_utc=datetime.now(timezone.utc).isoformat())
+    if entry:return Signal(level='STRONG_ENTRY',direction=g4,score=0.95,reasons=reasons+['5M and 3M timing aligned'],setup_ready=True,entry_ready=True,timestamp_utc=datetime.now(timezone.utc).isoformat())
+    return Signal(level='STRONG_SETUP',direction=g4,score=0.90,reasons=reasons+[f'timing not aligned (5M={d5}, 3M={d3})'],setup_ready=True,entry_ready=False,timestamp_utc=datetime.now(timezone.utc).isoformat())
 
 def finalize(sig:Signal,payload_core:dict)->Signal:
     raw=json.dumps({'level':sig.level,'direction':sig.direction,'core':payload_core},sort_keys=True,ensure_ascii=False); sig.event_key=hashlib.sha256(raw.encode()).hexdigest()[:24]; return sig
