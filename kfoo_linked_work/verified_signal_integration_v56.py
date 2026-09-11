@@ -1,7 +1,13 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
+import sys
 from typing import Any
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 from signal_engine_v56 import Signal, promote
 from verified_hns_mtf_v56 import VerifiedHNSMTFV56
@@ -9,14 +15,9 @@ from verified_mtf_candle_pipeline_v56 import VerifiedMTFCandlePipelineV56
 
 
 class VerifiedSignalIntegrationV56:
-    """Read-only integration between verified OHLC/MTF H&S and V56 promotion.
+    """Read-only bridge from verified market inputs to the V56 signal engine."""
 
-    KFOO/TradingView analysis remains an upstream input. This class deliberately
-    does not invent KFOO values or candles; it only wires verified market data
-    into the signal engine and preserves fail-closed behavior.
-    """
-
-    def __init__(self, api_key: str | None = None, timeout: float = 10.0):
+    def __init__(self, api_key: str | None = None, timeout: float = 10.0) -> None:
         self.mtf = VerifiedMTFCandlePipelineV56(api_key=api_key, timeout=timeout)
         self.hns = VerifiedHNSMTFV56(api_key=api_key, timeout=timeout)
 
@@ -25,11 +26,19 @@ class VerifiedSignalIntegrationV56:
         hns = self.hns.read(outputsize=outputsize)
         return {"mtf": mtf.to_dict(), "hns": hns.to_dict()}
 
-    def promote(self, analysis: dict[str, dict], timing: dict[str, Any] | None = None,
-                outputsize: int = 100) -> tuple[Signal, dict[str, Any]]:
+    def promote(
+        self,
+        analysis: dict[str, dict],
+        timing: dict[str, Any] | None = None,
+        outputsize: int = 100,
+    ) -> tuple[Signal, dict[str, Any]]:
         inputs = self.read_verified_inputs(outputsize=outputsize)
-        sig = promote(analysis, timing=timing, verified_hns_mtf=inputs["hns"])
-        return sig, inputs
+        signal = promote(
+            analysis,
+            timing=timing,
+            verified_hns_mtf=inputs["hns"],
+        )
+        return signal, inputs
 
 
 def main() -> None:
