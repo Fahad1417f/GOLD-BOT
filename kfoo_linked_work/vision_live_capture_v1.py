@@ -6,7 +6,12 @@ Read-only: no navigation, clicks, timeframe changes, orders, or broker calls.
 from __future__ import annotations
 import json
 import os
-from playwright_chart_reader import PlaywrightChartReader
+
+# Support both package execution (-m kfoo_linked_work...) and direct execution.
+try:
+    from .playwright_chart_reader import PlaywrightChartReader
+except ImportError:
+    from playwright_chart_reader import PlaywrightChartReader
 
 def capture_once(cdp_url: str | None = None, output_dir: str = "artifacts/vision") -> dict:
     reader = PlaywrightChartReader(cdp_url=cdp_url, screenshot_dir=output_dir)
@@ -16,7 +21,9 @@ def capture_once(cdp_url: str | None = None, output_dir: str = "artifacts/vision
             return result.to_dict()
         result.screenshot_path = reader.capture("tradingview_live.png")
         data = result.to_dict()
-        data["capture_verified"] = bool(result.connected and result.symbol and result.timeframe and result.screenshot_path)
+        data["capture_verified"] = bool(
+            result.connected and result.symbol and result.timeframe and result.screenshot_path
+        )
         return data
     finally:
         reader.close()
