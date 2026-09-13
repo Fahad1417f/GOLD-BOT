@@ -1,0 +1,22 @@
+name: vision-agent-v1
+
+on:
+  push:
+    branches: ["gold-vision-agent-v1-20260913"]
+  pull_request:
+    branches: ["gold-vision-agent-v1-20260913"]
+
+jobs:
+  vision-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install test dependencies
+        run: python -m pip install -U pip pytest
+      - name: Compile vision modules
+        run: python -m compileall -q kfoo_linked_work/vision_agent_v1.py kfoo_linked_work/vision_screen_reconstructor_v1.py kfoo_linked_work/vision_capture_adapter_v1.py
+      - name: Run vision regression tests
+        run: python -m pytest -q kfoo_linked_work/test_vision_agent_v1.py kfoo_linked_work/test_vision_screen_reconstructor_v1.py
