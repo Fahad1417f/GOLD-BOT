@@ -68,11 +68,34 @@ class Detection:
 
 
 def _candle_color(rgb: tuple[int, int, int]) -> bool:
-    """Broad red/green candle palette, excluding grey and yellow plot lines."""
+    """Recognize TradingView red/green candle colors while rejecting orange/yellow lines."""
     r, g, b = (int(v) for v in rgb)
-    red = r >= 120 and r - g >= 60 and r - b >= 20
-    green = g >= 100 and g - r >= 45 and g - b >= -30 and b >= 40
-    cyan_green = g >= 105 and b >= 95 and g - r >= 50 and b - r >= 35
+
+    # True red/pink candle/edge colors have a strong red dominance. The
+    # stronger ratio deliberately rejects common orange annotation lines
+    # such as RGB(220,140,0), which previously contaminated the candle runs.
+    red = (
+        r >= 140
+        and r - g >= 90
+        and r - b >= 70
+        and r >= int(g * 1.65) if g > 0 else True
+    )
+
+    # Saturated green/cyan-green candle colors. Require green dominance over
+    # red and avoid yellow/orange where red is comparatively strong.
+    green = (
+        g >= 105
+        and g - r >= 70
+        and b >= 40
+        and g >= int(b * 0.90)
+    )
+    cyan_green = (
+        g >= 105
+        and b >= 95
+        and g - r >= 50
+        and b - r >= 35
+        and g >= int(b * 0.90)
+    )
     return red or green or cyan_green
 
 
