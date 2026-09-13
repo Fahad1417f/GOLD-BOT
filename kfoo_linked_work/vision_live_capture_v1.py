@@ -8,7 +8,6 @@ import json
 import os
 from playwright_chart_reader import PlaywrightChartReader
 
-
 def capture_once(cdp_url: str | None = None, output_dir: str = "artifacts/vision") -> dict:
     reader = PlaywrightChartReader(cdp_url=cdp_url, screenshot_dir=output_dir)
     try:
@@ -17,13 +16,10 @@ def capture_once(cdp_url: str | None = None, output_dir: str = "artifacts/vision
             return result.to_dict()
         result.screenshot_path = reader.capture("tradingview_live.png")
         data = result.to_dict()
-        data["capture_verified"] = bool(
-            result.connected and result.symbol and result.timeframe and result.screenshot_path
-        )
+        data["capture_verified"] = bool(result.connected and result.symbol and result.timeframe and result.screenshot_path)
         return data
     finally:
         reader.close()
-
 
 if __name__ == "__main__":
     data = capture_once(os.getenv("TRADINGVIEW_CDP_URL"))
