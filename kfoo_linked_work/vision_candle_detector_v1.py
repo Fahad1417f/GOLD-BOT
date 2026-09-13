@@ -35,12 +35,15 @@ class DetectorConfig:
     max_wick_extension: int = 180
 
     min_body_row_coverage: float = 0.65
+    min_mean_body_row_coverage: float = 0.80
     body_span_overlap: float = 0.60
+    max_body_aspect_ratio: float = 35.0
 
     min_series_length: int = 3
-    max_series_gap: float = 60.0
+    max_series_gap: float = 100.0
     series_gap_lower_ratio: float = 0.55
     series_gap_upper_ratio: float = 1.55
+    series_pitch_width_ratio: float = 0.004
     body_width_tolerance: float = 1.8
 
 
@@ -67,20 +70,10 @@ class Detection:
 
 
 def _kind(rgb: tuple[int, int, int]) -> str | None:
-    """Return a TradingView candle color class while excluding orange/yellow overlays."""
+    """Recognize saturated TradingView candle colors and reject orange/yellow overlays."""
     r, g, b = (int(v) for v in rgb)
-
-    red = (
-        r >= 140
-        and r - g >= 55
-        and r - b >= 20
-        and g <= 110
-    )
-    green = (
-        g >= 110
-        and g - r >= 45
-        and b >= 35
-    )
+    red = r >= 140 and r - g >= 55 and r - b >= 20 and g <= 110
+    green = g >= 110 and g - r >= 45 and b >= 35
     if red and green:
         return "red" if r > g else "green"
     if red:
@@ -123,7 +116,6 @@ def _row_runs(
     min_width: int,
     max_width: int,
 ) -> dict[int, list[tuple[int, int, str]]]:
-    """Collect horizontal candle-colored runs suitable for a body core."""
     rows: dict[int, list[tuple[int, int, str]]] = {}
     for y in range(top, bottom):
         current: list[tuple[int, int, str]] = []
@@ -138,8 +130,8 @@ def _row_runs(
             while x < right and _kind(pix[x, y]) == kind:
                 x += 1
             end = x - 1
-            width = end - start + 1
-            if min_width <= width <= max_width:
+            run_width = end - start + 1
+            if min_width <= run_width <= max_width:
                 current.append((start, end, kind))
         if current:
             rows[y] = current
@@ -150,10 +142,8 @@ def _extract_body_groups(
     rows: dict[int, list[tuple[int, int, str]]],
     min_overlap: float,
 ) -> list[dict]:
-    """Group matching body strips across adjacent rows."""
     active: list[dict] = []
     groups: list[dict] = []
-
     for y in sorted(rows):
         new_active: list[dict] = []
         for start, end, kind in rows[y]:
@@ -168,7 +158,6 @@ def _extract_body_groups(
                 if overlap > best_overlap:
                     best_overlap = overlap
                     best = group
-
             if best is not None and best_overlap >= min_overlap:
                 best["last_y"] = y
                 best["last_span"] = (start, end)
@@ -188,10 +177,8 @@ def _extract_body_groups(
                         "kind": kind,
                     }
                 )
-
         groups.extend(group for group in active if group["last_y"] < y)
         active = [group for group in active if group["last_y"] == y] + new_active
-
     groups.extend(active)
     return groups
 
@@ -215,7 +202,6 @@ def _raw_candidates(
     bottom: int,
 ) -> list[PixelCandleCandidate]:
     candidates: list[PixelCandleCandidate] = []
-
     for group_index, group in enumerate(_extract_body_groups(rows, config.body_span_overlap)):
         body_top = min(group["ys"])
         body_bottom = max(group["ys"])
@@ -228,6 +214,13 @@ def _raw_candidates(
         x0, x1 = group["x0"], group["x1"]
         body_width = x1 - x0 + 1
         if not (config.min_body_run_width <= body_width <= config.max_body_width):
+            continue
+
+        widths = [end - start + 1 for start, end in group["spans"]]
+        if statistics.median(widths) < config.min_body_run_width:
+            continue
+        width_median = statistics.median(widths)
+        if max(widths) / max(1.0, min(widths)) > config.body_width_tolerance:
             continue
 
         center_x = int(round((x0 + x1) / 2))
@@ -254,9 +247,16 @@ def _raw_candidates(
             continue
         if max(upper_wick, lower_wick) > config.max_wick_extension:
             continue
+        if body_height / max(1, body_width) > config.max_body_aspect_ratio:
+            continue
 
-        widths = [end - start + 1 for start, end in group["spans"]]
-        if statistics.median(widths) < config.min_body_run_width:
+        row_coverages = [
+            sum(a <= y <= bb for a, bb in group["spans"]) / len(group["spans"])
+            for y in range(body_top, body_bottom + 1)
+        ]
+        if max(row_coverages) < config.min_body_row_coverage:
+            continue
+        if sum(row_coverages) / len(row_coverages) < config.min_mean_body_row_coverage:
             continue
 
         polarity = group["kind"]
@@ -270,7 +270,8 @@ def _raw_candidates(
             0.74
             + min(0.10, body_height / 50)
             + min(0.10, (upper_wick + lower_wick) / 50)
-            + min(0.05, len(group["ys"]) / max(1, body_height) * 0.05),
+            + min(0.05, (sum(row_coverages) / len(row_coverages)) * 0.05)
+            + min(0.02, width_median / 100),
         )
         if confidence < config.min_confidence:
             continue
@@ -289,61 +290,63 @@ def _raw_candidates(
                 confidence,
             )
         )
-
     return candidates
 
 
 def _retain_series(
     candidates: list[PixelCandleCandidate],
     config: DetectorConfig,
+    roi_width: int,
 ) -> list[PixelCandleCandidate]:
-    """Keep dense, regularly spaced x-series and reject isolated overlay shapes."""
+    """Keep the dominant, adequately spaced candle chain and reject overlay clusters."""
     if len(candidates) < config.min_series_length:
         return []
-
     ordered = sorted(candidates, key=lambda candle: candle.x)
-    gaps = [
-        ordered[i + 1].x - ordered[i].x
-        for i in range(len(ordered) - 1)
-        if 0 < ordered[i + 1].x - ordered[i].x <= config.max_series_gap
-    ]
+    all_gaps = [ordered[i + 1].x - ordered[i].x for i in range(len(ordered) - 1)]
+    gaps = [g for g in all_gaps if 0 < g <= config.max_series_gap]
     if not gaps:
         return []
 
-    histogram: dict[int, int] = {}
-    for gap in gaps:
-        histogram[round(gap)] = histogram.get(round(gap), 0) + 1
-    pitch = max(histogram, key=histogram.get, default=round(statistics.median(gaps)))
-    if pitch <= 0:
-        return []
+    # Avoid choosing the tiny 10-15 px spacing commonly produced by text/box
+    # overlays on Retina screenshots. A real candle series must occupy a
+    # material fraction of the chart width per candle pitch.
+    pitch = statistics.median(gaps)
+    min_pitch = roi_width * config.series_pitch_width_ratio
+    if pitch < min_pitch:
+        # Try larger gaps as the true bar pitch when the smallest-gap cluster
+        # is clearly too dense to be the TradingView candle series.
+        larger = [g for g in gaps if g >= min_pitch]
+        if not larger:
+            return []
+        pitch = statistics.median(larger)
 
-    low = max(3.0, pitch * config.series_gap_lower_ratio)
+    low = pitch * config.series_gap_lower_ratio
     high = pitch * config.series_gap_upper_ratio
     chains: list[list[PixelCandleCandidate]] = []
-    current = [ordered[0]]
-    for previous, current_candidate in zip(ordered, ordered[1:]):
-        gap = current_candidate.x - previous.x
-        if low <= gap <= high:
-            current.append(current_candidate)
-        else:
-            if len(current) >= config.min_series_length:
-                chains.append(current)
-            current = [current_candidate]
-    if len(current) >= config.min_series_length:
-        chains.append(current)
+    for start_index, first in enumerate(ordered):
+        current = [first]
+        for candidate in ordered[start_index + 1 :]:
+            gap = candidate.x - current[-1].x
+            if low <= gap <= high:
+                current.append(candidate)
+            elif gap > high:
+                if len(current) >= config.min_series_length:
+                    chains.append(current)
+                break
+        if len(current) >= config.min_series_length:
+            chains.append(current)
 
-    kept: list[PixelCandleCandidate] = []
-    for chain in chains:
-        median_height = statistics.median(
-            max(1.0, candle.body_bottom - candle.body_top + 1)
-            for candle in chain
-        )
-        for candle in chain:
-            body_height = candle.body_bottom - candle.body_top + 1
-            if body_height <= median_height * 4.0 + 2:
-                kept.append(candle)
+    if not chains:
+        return []
 
-    return sorted(kept, key=lambda candle: candle.x)
+    def score(chain: list[PixelCandleCandidate]) -> tuple[int, float, float, float]:
+        chain_gaps = [chain[i + 1].x - chain[i].x for i in range(len(chain) - 1)]
+        deviation = statistics.mean(abs(g - pitch) for g in chain_gaps) if chain_gaps else float("inf")
+        span_ratio = (chain[-1].x - chain[0].x) / max(1.0, roi_width)
+        color_diversity = len({c.polarity for c in chain})
+        return len(chain), span_ratio, color_diversity, -deviation
+
+    return sorted(max(chains, key=score), key=lambda candle: candle.x)
 
 
 def detect_candles(
@@ -352,7 +355,6 @@ def detect_candles(
 ) -> Detection:
     if Image is None:
         return Detection((), False, "PIL_NOT_INSTALLED", None)
-
     try:
         image = Image.open(path).convert("RGB")
     except Exception as exc:
@@ -361,41 +363,20 @@ def detect_candles(
     width, height = image.size
     left = max(0, config.roi_left)
     top = max(0, config.roi_top)
-    right = min(
-        width,
-        config.roi_right if config.roi_right is not None else width - 55,
-    )
-    raw_bottom = min(
-        height,
-        config.roi_bottom if config.roi_bottom is not None else height - 70,
-    )
+    right = min(width, config.roi_right if config.roi_right is not None else width - 55)
+    raw_bottom = min(height, config.roi_bottom if config.roi_bottom is not None else height - 70)
     bottom = min(raw_bottom, _price_pane_bottom(top, raw_bottom, config.price_pane_ratio))
-
     roi = (left, top, right, bottom)
     if right - left < 100 or bottom - top < 100:
         return Detection((), False, "ROI_TOO_SMALL", roi)
 
     pix = image.load()
-    rows = _row_runs(
-        pix,
-        left,
-        top,
-        right,
-        bottom,
-        config.min_body_run_width,
-        config.max_body_width,
-    )
+    rows = _row_runs(pix, left, top, right, bottom, config.min_body_run_width, config.max_body_width)
     if not rows:
         return Detection((), False, "NO_CANDLE_BODY_ROWS", roi)
 
     raw = _raw_candidates(pix, rows, config, top, bottom)
-    retained = _retain_series(raw, config)
+    retained = _retain_series(raw, config, right - left)
     if len(retained) < config.min_series_length:
-        return Detection(
-            tuple(retained),
-            False,
-            "INSUFFICIENT_VERIFIED_CANDLE_GEOMETRY",
-            roi,
-        )
-
+        return Detection(tuple(retained), False, "INSUFFICIENT_VERIFIED_CANDLE_GEOMETRY", roi)
     return Detection(tuple(retained), True, "PIXEL_CANDLES_DETECTED", roi)
