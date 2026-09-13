@@ -2,7 +2,7 @@
 
 No price/OHLC values are inferred here. The detector only proposes pixel candles.
 Verification is fail-closed and rejects overlays/indicator panes using local
-candle geometry plus a center-column continuity check.
+candle geometry plus a center-column continuity check and candle-series spacing.
 """
 from __future__ import annotations
 
@@ -26,7 +26,7 @@ class DetectorConfig:
     # detector to the upper price pane without inferring any price values.
     price_pane_ratio: float = 0.70
     min_body_height: int = 2
-    min_body_width: int = 4
+    min_body_width: int = 2
     max_body_width: int = 18
     min_confidence: float = 0.72
     min_wick_extension: int = 2
@@ -39,6 +39,10 @@ class DetectorConfig:
     min_body_coverage_ratio: float = 0.60
     min_center_run_coverage: float = 0.65
     min_center_body_coverage: float = 0.90
+    max_series_gap: float = 40.0
+    series_gap_lower_ratio: float = 0.45
+    series_gap_upper_ratio: float = 1.75
+    min_series_length: int = 5
 
 
 @dataclass(frozen=True)
@@ -64,7 +68,7 @@ class Detection:
 
 
 def _candle_color(rgb: tuple[int, int, int]) -> bool:
-    """Broad red/green candle palette, excluding grey/yellow plot lines."""
+    """Broad red/green candle palette, excluding grey and yellow plot lines."""
     r, g, b = (int(v) for v in rgb)
     red = r >= 120 and r - g >= 60 and r - b >= 20
     green = g >= 100 and g - r >= 45 and g - b >= -30 and b >= 40
@@ -100,6 +104,37 @@ def _span_iou(a: tuple[int, int], b: tuple[int, int]) -> float:
 def _price_pane_bottom(top: int, bottom: int, ratio: float) -> int:
     ratio = min(0.90, max(0.55, float(ratio)))
     return top + int(round((bottom - top) * ratio))
+
+
+def _retain_series(candidates: list[PixelCandleCandidate], config: DetectorConfig) -> list[PixelCandleCandidate]:
+    """Keep dense, regularly spaced x-series and reject isolated overlay shapes."""
+    if len(candidates) < config.min_series_length:
+        return []
+    ordered = sorted(candidates, key=lambda c: c.x)
+    gaps = [ordered[i + 1].x - ordered[i].x for i in range(len(ordered) - 1)]
+    usable = [g for g in gaps if 0 < g <= config.max_series_gap]
+    if not usable:
+        return []
+    pitch = sorted(usable)[len(usable) // 2]
+    if pitch <= 0:
+        return []
+
+    low = pitch * config.series_gap_lower_ratio
+    high = pitch * config.series_gap_upper_ratio
+    chains: list[list[PixelCandleCandidate]] = []
+    current = [ordered[0]]
+    for prev, cur, gap in zip(ordered, ordered[1:], gaps):
+        if low <= gap <= high:
+            current.append(cur)
+        else:
+            if len(current) >= config.min_series_length:
+                chains.append(current)
+            current = [cur]
+    if len(current) >= config.min_series_length:
+        chains.append(current)
+
+    kept = [c for chain in chains for c in chain]
+    return sorted(kept, key=lambda c: c.x)
 
 
 def detect_candles(path: str | Path, config: DetectorConfig = DetectorConfig()) -> Detection:
@@ -143,7 +178,7 @@ def detect_candles(path: str | Path, config: DetectorConfig = DetectorConfig()) 
             current = [item]
     groups.append(current)
 
-    out: list[PixelCandleCandidate] = []
+    raw_candidates: list[PixelCandleCandidate] = []
     for idx, group in enumerate(groups):
         x0, x1 = group[0][0], group[-1][0]
         body_width = x1 - x0 + 1
@@ -185,8 +220,6 @@ def detect_candles(path: str | Path, config: DetectorConfig = DetectorConfig()) 
         if body_coverage < config.min_body_coverage_ratio:
             continue
 
-        # A real candle keeps its colored wick/body on its center column.
-        # Thin edges from colored labels/boxes generally fail this check.
         center_x = int(round((x0 + x1) / 2))
         center_run = _longest_run([y for y in range(high, low + 1) if _candle_color(pix[center_x, y])])
         if center_run is None:
@@ -210,7 +243,7 @@ def detect_candles(path: str | Path, config: DetectorConfig = DetectorConfig()) 
         if confidence < config.min_confidence:
             continue
 
-        out.append(
+        raw_candidates.append(
             PixelCandleCandidate(
                 idx,
                 (x0 + x1) / 2,
@@ -225,6 +258,7 @@ def detect_candles(path: str | Path, config: DetectorConfig = DetectorConfig()) 
             )
         )
 
+    out = _retain_series(raw_candidates, config)
     if len(out) < 3:
         return Detection(tuple(out), False, "INSUFFICIENT_VERIFIED_CANDLE_GEOMETRY", roi)
     return Detection(tuple(out), True, "PIXEL_CANDLES_DETECTED", roi)
