@@ -1,10 +1,12 @@
 """Read-only TradingView screenshot candle geometry detector.
 
 No price/OHLC values are inferred here. The detector only proposes pixel candles.
-Verification is fail-closed. Horizontal chart lines and dashed overlays are
-ignored by requiring a contiguous candle-colored vertical run per image column.
+Verification is fail-closed and rejects long overlay groups by requiring local
+candle-width geometry, vertical-run continuity, and a broad body core.
 """
 from __future__ import annotations
+
+import math
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -21,14 +23,16 @@ class DetectorConfig:
     roi_right: int | None = None
     roi_bottom: int | None = None
     min_body_height: int = 2
-    max_body_width: int = 30
+    max_body_width: int = 18
     min_confidence: float = 0.72
     min_wick_extension: int = 2
     min_total_height: int = 5
     min_core_width_ratio: float = 0.50
-    max_body_to_total_ratio: float = 0.92
+    max_body_to_total_ratio: float = 0.90
     min_vertical_run: int = 6
-    max_vertical_gap: int = 20
+    min_span_iou: float = 0.50
+    max_x_gap: int = 1
+    min_body_coverage_ratio: float = 0.60
 
 
 @dataclass(frozen=True)
@@ -54,8 +58,8 @@ class Detection:
 
 
 def _candle_color(rgb: tuple[int, int, int]) -> bool:
-    """Broad red/green candle palette, excluding grey/yellow/orange plot lines."""
-    r, g, b = rgb
+    """Broad red/green candle palette, excluding grey and yellow plot lines."""
+    r, g, b = (int(v) for v in rgb)
     red = r >= 120 and r - g >= 60 and r - b >= 20
     green = g >= 100 and g - r >= 45 and g - b >= -30 and b >= 40
     cyan_green = g >= 105 and b >= 95 and g - r >= 50 and b - r >= 35
@@ -65,7 +69,7 @@ def _candle_color(rgb: tuple[int, int, int]) -> bool:
 def _runs(ys: list[int]) -> list[tuple[int, int]]:
     if not ys:
         return []
-    out = []
+    out: list[tuple[int, int]] = []
     start = prev = ys[0]
     for y in ys[1:]:
         if y == prev + 1:
@@ -78,8 +82,13 @@ def _runs(ys: list[int]) -> list[tuple[int, int]]:
 
 
 def _longest_run(ys: list[int]) -> tuple[int, int] | None:
-    runs = _runs(ys)
-    return max(runs, key=lambda q: q[1] - q[0], default=None)
+    return max(_runs(ys), key=lambda q: q[1] - q[0], default=None)
+
+
+def _span_iou(a: tuple[int, int], b: tuple[int, int]) -> float:
+    inter = max(0, min(a[1], b[1]) - max(a[0], b[0]) + 1)
+    union = max(a[1], b[1]) - min(a[0], b[0]) + 1
+    return inter / union if union else 0.0
 
 
 def detect_candles(path: str | Path, config: DetectorConfig = DetectorConfig()) -> Detection:
@@ -100,11 +109,6 @@ def detect_candles(path: str | Path, config: DetectorConfig = DetectorConfig()) 
         return Detection((), False, "ROI_TOO_SMALL", roi)
 
     pix = im.load()
-
-    # Key change from the previous detector:
-    # analyse each x-column independently and keep only its longest contiguous
-    # candle-colored vertical run. Horizontal gridlines/trendlines therefore
-    # cannot weld the whole chart into one giant candidate group.
     columns: list[tuple[int, tuple[int, int]]] = []
     for x in range(left, right):
         ys = [y for y in range(top, bottom) if _candle_color(pix[x, y])]
@@ -115,13 +119,17 @@ def detect_candles(path: str | Path, config: DetectorConfig = DetectorConfig()) 
     if not columns:
         return Detection((), False, "NO_CANDLE_COLOR_VERTICAL_RUNS", roi)
 
+    # Group only adjacent columns whose main vertical spans materially overlap.
+    # This prevents horizontal/diagonal overlays from welding unrelated candles.
     groups: list[list[tuple[int, tuple[int, int]]]] = []
-    current = [columns[0]]
+    current: list[tuple[int, tuple[int, int]]] = [columns[0]]
     for item in columns[1:]:
-        x, (a, bb) = item
-        prev_x, (pa, pb) = current[-1]
-        near_y = not (a > pb + config.max_vertical_gap or bb < pa - config.max_vertical_gap)
-        if x <= prev_x + 2 and near_y:
+        x, span = item
+        prev_x, prev_span = current[-1]
+        if (
+            x <= prev_x + config.max_x_gap
+            and _span_iou(span, prev_span) >= config.min_span_iou
+        ):
             current.append(item)
         else:
             groups.append(current)
@@ -140,7 +148,7 @@ def detect_candles(path: str | Path, config: DetectorConfig = DetectorConfig()) 
         low = max(bb for _, bb in spans)
         total_height = low - high + 1
 
-        core_threshold = max(2, int(round(len(spans) * config.min_core_width_ratio)))
+        core_threshold = max(2, math.ceil(len(spans) * config.min_core_width_ratio))
         core_rows: list[int] = []
         for y in range(high, low + 1):
             covered = sum(a <= y <= bb for a, bb in spans)
@@ -162,16 +170,20 @@ def detect_candles(path: str | Path, config: DetectorConfig = DetectorConfig()) 
         if body_height / total_height > config.max_body_to_total_ratio:
             continue
 
-        body_coverage = max(
+        max_body_coverage = max(
             sum(a <= y <= bb for a, bb in spans)
             for y in range(body_top, body_bottom + 1)
         )
+        coverage_ratio = max_body_coverage / len(spans)
+        if coverage_ratio < config.min_body_coverage_ratio:
+            continue
+
         confidence = min(
             0.99,
             0.72
             + min(0.10, body_height / 50)
             + min(0.10, (upper_wick + lower_wick) / 50)
-            + min(0.06, (body_coverage / len(spans)) * 0.06),
+            + min(0.06, coverage_ratio * 0.06),
         )
         if confidence < config.min_confidence:
             continue
