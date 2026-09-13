@@ -49,78 +49,47 @@ def parse_clock_state(t):
         c=parse_kfoo_candle_clock(t,tf) if parse_kfoo_candle_clock else None
         if c is None and tf=="15m" and parse_legacy_leader_remaining:
             c=parse_legacy_leader_remaining(t)
-        result[tf]={
-            "remaining_seconds":c.remaining_seconds if c else None,
-            "remaining_hms":c.remaining_hms if c else None,
-            "raw":c.raw if c else None,
-            "source":c.source if c else "WAIT",
-            "closed":bool(c.closed) if c else False,
-        }
+        result[tf]={"remaining_seconds":c.remaining_seconds if c else None,"remaining_hms":c.remaining_hms if c else None,"raw":c.raw if c else None,"source":c.source if c else "WAIT","closed":bool(c.closed) if c else False}
     return result
 
 def runtime_health(t):
-    # Read the latest machine-readable V56 markers. This is the direct bridge
-    # from the local Vision/OCR monitor output to GitHub Pages.
     checks={}
-    for key in ("CAPTURE_15M","ANALYSIS_15M","FRAME_15M_CAPTURE","FRAME_15M_VERIFY",
-                "FRAME_1H_CAPTURE","FRAME_1H_VERIFY","FRAME_4H_CAPTURE","FRAME_4H_VERIFY"):
+    for key in ("CAPTURE_15M","ANALYSIS_15M","FRAME_15M_CAPTURE","FRAME_15M_VERIFY","FRAME_1H_CAPTURE","FRAME_1H_VERIFY","FRAME_4H_CAPTURE","FRAME_4H_VERIFY"):
         checks[key]=latest(t,rf"{re.escape(key)}=([^\s]+)","WAIT")
-    vision_pass = all(v.upper()=="PASS" for k,v in checks.items()
-                      if k.startswith(("CAPTURE_15M","ANALYSIS_15M","FRAME_15M_")))
-    errors = list(re.finditer(r"(?i)(Traceback|TypeError|ModuleNotFoundError|ConnectionError|ConnectionRefusedError)", t))
-    symbol_line=latest(t,r"TRADINGVIEW_SYMBOL_DETECTED:\s*([^|\\r\\n]+)","XAUUSD").strip()
-    manual_tf=latest(t,r"MANUAL_TIMEFRAME_ACTIVE:\s*([^\\s]+)","15m")
-    return {
-        "checks":checks,
-        "vision_ocr":"PASS" if vision_pass else "WAIT",
-        "recent_errors":len(errors),
-        "symbol_source":symbol_line,
-        "manual_timeframe":manual_tf,
-    }
+    vision_pass=all(v.upper()=="PASS" for k,v in checks.items() if k.startswith(("CAPTURE_15M","ANALYSIS_15M","FRAME_15M_")))
+    errors=list(re.finditer(r"(?i)(Traceback|TypeError|ModuleNotFoundError|ConnectionError|ConnectionRefusedError)",t))
+    symbol_line=latest(t,r"TRADINGVIEW_SYMBOL_DETECTED:\s*([^|\r\n]+)","XAUUSD").strip()
+    # Important: use a real whitespace exclusion here. The old pattern used
+    # [^\\s], which captured the following newline and marker text.
+    manual_tf=latest(t,r"MANUAL_TIMEFRAME_ACTIVE:\s*([^\s]+)","15m")
+    return {"checks":checks,"vision_ocr":"PASS" if vision_pass else "WAIT","recent_errors":len(errors),"symbol_source":symbol_line,"manual_timeframe":manual_tf}
 
 def parse_log(t):
     rh=runtime_health(t)
-    s={"agent_status":"ONLINE","execution":"OFF","symbol":rh["symbol_source"] or "XAUUSD","timeframe":rh["manual_timeframe"] or "15m",
-       "direction":latest(t,r"DIRECTION_15M=([^\s]+)","neutral"),"confidence":0,"level":"WAIT","score":0,
-       "gravity":{"4h":latest(t,r"DIRECTION_4H=([^\s]+)","unknown"),"1h":latest(t,r"DIRECTION_1H=([^\s]+)","unknown")},
-       "timing":{"5m":latest(t,r"DIRECTION_5M=([^\s]+)","unknown"),"3m":latest(t,r"DIRECTION_3M=([^\s]+)","unknown")},
-       "candle_clock":parse_clock_state(t),
-       "runtime_health":rh,
-       "kfoo":{"table":"—","tf_agg":latest(t,r"KFOO_TF_AGG_15M=([^\r\n]+)","—"),"ind_agg":latest(t,r"KFOO_IND_AGG_15M=([^\r\n]+)","—"),"active":latest(t,r"KFOO_ACTIVE_15M=([^\s]+)","—"),"score":"—","indicators":{}},
-       "reasons":[],"updated_at":time.time(),"source":"GOLD-BOT V56 local agent -> GitHub state bridge"}
+    s={"agent_status":"ONLINE","execution":"OFF","symbol":rh["symbol_source"] or "XAUUSD","timeframe":rh["manual_timeframe"] or "15m","direction":latest(t,r"DIRECTION_15M=([^\s]+)","neutral"),"confidence":0,"level":"WAIT","score":0,"gravity":{"4h":latest(t,r"DIRECTION_4H=([^\s]+)","unknown"),"1h":latest(t,r"DIRECTION_1H=([^\s]+)","unknown")},"timing":{"5m":latest(t,r"DIRECTION_5M=([^\s]+)","unknown"),"3m":latest(t,r"DIRECTION_3M=([^\s]+)","unknown")},"candle_clock":parse_clock_state(t),"runtime_health":rh,"kfoo":{"table":"—","tf_agg":latest(t,r"KFOO_TF_AGG_15M=([^\r\n]+)","—"),"ind_agg":latest(t,r"KFOO_IND_AGG_15M=([^\r\n]+)","—"),"active":latest(t,r"KFOO_ACTIVE_15M=([^\s]+)","—"),"score":"—","indicators":{}},"reasons":[],"updated_at":time.time(),"source":"GOLD-BOT V56 local agent -> GitHub state bridge"}
     if re.search(r"KFOO_TABLE_(4H|1H|15M)=PASS",t,re.I): s["kfoo"]["table"]="PASS"
     ind=latest(t,r"KFOO_INDICATORS_15M=([^\r\n]+)","")
     for part in [x.strip() for x in ind.split("|") if "=" in x]:
         k,v=part.split("=",1); s["kfoo"]["indicators"][k.strip()]=v.strip()
     if re.search(r"STRONG_ENTRY|STRONG_SIGNAL|FAST_TRADE_READY=TRUE",t,re.I): s["level"]="STRONG_ENTRY"
     elif re.search(r"STRONG_SETUP|SETUP_READY",t,re.I): s["level"]="STRONG_SETUP"
-    if s["direction"]=="neutral" and s["gravity"]["4h"]==s["gravity"]["1h"] and s["gravity"]["4h"] in ("long","short"):
-        s["direction"]=s["gravity"]["4h"]
+    if s["direction"]=="neutral" and s["gravity"]["4h"]==s["gravity"]["1h"] and s["gravity"]["4h"] in ("long","short"): s["direction"]=s["gravity"]["4h"]
     s["reasons"]=["KFOO="+s["kfoo"]["table"],"TF="+s["kfoo"]["tf_agg"],"IND="+s["kfoo"]["ind_agg"]]
     return s
 
 def merge_supervisor(state):
     try:
         sup=json.loads(SUPERVISOR_STATE.read_text(encoding="utf-8"))
-        state["supervisor_status"]=sup.get("status","UNKNOWN")
-        state["safe_mode"]=bool(sup.get("safe_mode",True))
-        state["repair"]=sup.get("repair","NONE")
-        state["development"]=sup.get("development","WATCHING")
-        state["supervisor_updated_at"]=sup.get("updated_at")
-        if sup.get("status")!="RUNNING":
-            state["agent_status"]="DEGRADED"; state["level"]="WAIT"
-            state["reasons"].insert(0,"SUPERVISOR="+str(sup.get("status")))
-    except Exception:
-        state["supervisor_status"]="UNKNOWN"
+        state["supervisor_status"]=sup.get("status","UNKNOWN"); state["safe_mode"]=bool(sup.get("safe_mode",True)); state["repair"]=sup.get("repair","NONE"); state["development"]=sup.get("development","WATCHING"); state["supervisor_updated_at"]=sup.get("updated_at")
+        if sup.get("status")!="RUNNING": state["agent_status"]="DEGRADED"; state["level"]="WAIT"; state["reasons"].insert(0,"SUPERVISOR="+str(sup.get("status")))
+    except Exception: state["supervisor_status"]="UNKNOWN"
     return state
 
 def publish(state):
     global last_hash,last_push
-    raw=json.dumps(state,ensure_ascii=False,sort_keys=True,separators=(",",":"))
-    h=hashlib.sha256(raw.encode()).hexdigest()
+    raw=json.dumps(state,ensure_ascii=False,sort_keys=True,separators=(",",":")); h=hashlib.sha256(raw.encode()).hexdigest()
     if h==last_hash or time.time()-last_push<MIN_PUBLISH:return
-    sha=get_sha()
-    body={"message":"chore: publish live GOLD-BOT monitor state","content":base64.b64encode(raw.encode()).decode(),"branch":BRANCH}
+    sha=get_sha(); body={"message":"chore: publish live GOLD-BOT monitor state","content":base64.b64encode(raw.encode()).decode(),"branch":BRANCH}
     if sha: body["sha"]=sha
     gh("PUT",API,body); last_hash=h; last_push=time.time(); print("GITHUB_STATE=UPDATED",flush=True)
 
@@ -134,8 +103,7 @@ def main():
                 if t.strip():
                     state=merge_supervisor(parse_log(t))
                     if update_virtual_trades:
-                        try:
-                            vt=update_virtual_trades(); state["virtual_trades"]=vt
+                        try: state["virtual_trades"]=update_virtual_trades()
                         except Exception as e: state["virtual_trades_error"]=type(e).__name__+":"+str(e)
                     publish(state)
         except Exception as e: print("GITHUB_STATE_ERROR="+type(e).__name__+":"+str(e),flush=True)
