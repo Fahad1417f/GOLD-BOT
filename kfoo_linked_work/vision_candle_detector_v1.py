@@ -23,7 +23,10 @@ class DetectorConfig:
     roi_top: int = 75
     roi_right: int | None = None
     roi_bottom: int | None = None
-    price_pane_ratio: float = 0.70
+    # KFOO lower panes/oscillators commonly occupy the lower part of the
+    # TradingView canvas. Keep the price pane deliberately conservative.
+    price_pane_ratio: float = 0.55
+    price_pane_margin: int = 8
 
     min_body_height: int = 4
     min_body_run_width: int = 4
@@ -38,10 +41,15 @@ class DetectorConfig:
     body_span_overlap: float = 0.60
 
     min_series_length: int = 3
-    max_series_gap: float = 60.0
-    series_gap_lower_ratio: float = 0.55
-    series_gap_upper_ratio: float = 1.55
+    # Real TradingView candles are substantially farther apart than duplicate
+    # overlay fragments detected around the same x-coordinate.
+    min_series_pitch: float = 16.0
+    max_series_pitch: float = 48.0
+    x_merge_distance: float = 11.0
+    series_gap_lower_ratio: float = 0.78
+    series_gap_upper_ratio: float = 1.28
     body_width_tolerance: float = 1.8
+    max_returned_candles: int = 24
 
 
 @dataclass(frozen=True)
@@ -100,9 +108,9 @@ def _longest_run(values: list[int]) -> tuple[int, int] | None:
     return max(_runs(values), key=lambda item: item[1] - item[0], default=None)
 
 
-def _price_pane_bottom(top: int, bottom: int, ratio: float) -> int:
+def _price_pane_bottom(top: int, bottom: int, ratio: float, margin: int) -> int:
     ratio = min(0.90, max(0.55, float(ratio)))
-    return top + int(round((bottom - top) * ratio))
+    return max(top + 40, top + int(round((bottom - top) * ratio)) - max(0, int(margin)))
 
 
 def _row_runs(
@@ -284,32 +292,55 @@ def _raw_candidates(
     return candidates
 
 
+def _merge_x_duplicates(candidates: list[PixelCandleCandidate], distance: float) -> list[PixelCandleCandidate]:
+    """Collapse multiple overlay fragments that sit on essentially the same candle x-position."""
+    if not candidates:
+        return []
+    ordered = sorted(candidates, key=lambda c: c.x)
+    clusters: list[list[PixelCandleCandidate]] = [[ordered[0]]]
+    for candidate in ordered[1:]:
+        if candidate.x - clusters[-1][-1].x <= distance:
+            clusters[-1].append(candidate)
+        else:
+            clusters.append([candidate])
+    merged: list[PixelCandleCandidate] = []
+    for cluster in clusters:
+        merged.append(max(cluster, key=lambda c: (c.confidence, c.body_bottom - c.body_top, -abs(c.x - statistics.median(x.x for x in cluster)))))
+    return merged
+
+
 def _retain_series(
     candidates: list[PixelCandleCandidate],
     config: DetectorConfig,
 ) -> list[PixelCandleCandidate]:
-    """Keep dense, regularly spaced x-series and reject isolated overlay shapes."""
-    if len(candidates) < config.min_series_length:
+    """Keep one compact, regularly spaced series and return only the newest candles."""
+    merged = _merge_x_duplicates(candidates, config.x_merge_distance)
+    if len(merged) < config.min_series_length:
         return []
 
-    ordered = sorted(candidates, key=lambda candle: candle.x)
+    ordered = sorted(merged, key=lambda candle: candle.x)
     gaps = [
         ordered[i + 1].x - ordered[i].x
         for i in range(len(ordered) - 1)
-        if 0 < ordered[i + 1].x - ordered[i].x <= config.max_series_gap
+        if config.min_series_pitch <= ordered[i + 1].x - ordered[i].x <= config.max_series_pitch
     ]
     if not gaps:
         return []
 
+    # Prefer a pitch that is both frequent and central, rather than the smallest
+    # gap. This prevents duplicate KFOO/indicator fragments from becoming the pitch.
+    rounded = [round(gap) for gap in gaps]
     histogram: dict[int, int] = {}
-    for gap in gaps:
-        histogram[round(gap)] = histogram.get(round(gap), 0) + 1
-    pitch = max(histogram, key=histogram.get, default=round(statistics.median(gaps)))
-    if pitch <= 0:
-        return []
+    for gap in rounded:
+        histogram[gap] = histogram.get(gap, 0) + 1
+    median_gap = statistics.median(gaps)
+    pitch = max(
+        histogram,
+        key=lambda p: (histogram[p], -abs(float(p) - median_gap)),
+    )
+    low = max(config.min_series_pitch, pitch * config.series_gap_lower_ratio)
+    high = min(config.max_series_pitch, pitch * config.series_gap_upper_ratio)
 
-    low = max(3.0, pitch * config.series_gap_lower_ratio)
-    high = pitch * config.series_gap_upper_ratio
     chains: list[list[PixelCandleCandidate]] = []
     current = [ordered[0]]
     for previous, current_candidate in zip(ordered, ordered[1:]):
@@ -323,18 +354,29 @@ def _retain_series(
     if len(current) >= config.min_series_length:
         chains.append(current)
 
-    kept: list[PixelCandleCandidate] = []
-    for chain in chains:
-        median_height = statistics.median(
-            max(1.0, candle.body_bottom - candle.body_top + 1)
-            for candle in chain
-        )
-        for candle in chain:
-            body_height = candle.body_bottom - candle.body_top + 1
-            if body_height <= median_height * 4.0 + 2:
-                kept.append(candle)
+    if not chains:
+        return []
 
-    return sorted(kept, key=lambda candle: candle.x)
+    def chain_key(chain: list[PixelCandleCandidate]):
+        gaps_local = [chain[i + 1].x - chain[i].x for i in range(len(chain) - 1)]
+        pitch_error = statistics.median(abs(g - pitch) for g in gaps_local) if gaps_local else float("inf")
+        return (len(chain), -pitch_error, chain[-1].x)
+
+    best = max(chains, key=chain_key)
+    median_height = statistics.median(
+        max(1.0, candle.body_bottom - candle.body_top + 1)
+        for candle in best
+    )
+    filtered = [
+        candle
+        for candle in best
+        if candle.body_bottom - candle.body_top + 1 <= median_height * config.body_width_tolerance + 4
+    ]
+    if len(filtered) < config.min_series_length:
+        return []
+    if len(filtered) > config.max_returned_candles:
+        filtered = filtered[-config.max_returned_candles:]
+    return sorted(filtered, key=lambda candle: candle.x)
 
 
 def detect_candles(
@@ -360,7 +402,7 @@ def detect_candles(
         height,
         config.roi_bottom if config.roi_bottom is not None else height - 70,
     )
-    bottom = min(raw_bottom, _price_pane_bottom(top, raw_bottom, config.price_pane_ratio))
+    bottom = _price_pane_bottom(top, raw_bottom, config.price_pane_ratio, config.price_pane_margin)
 
     roi = (left, top, right, bottom)
     if right - left < 100 or bottom - top < 100:
