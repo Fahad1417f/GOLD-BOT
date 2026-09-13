@@ -71,24 +71,24 @@ def _candle_color(rgb: tuple[int, int, int]) -> bool:
     """Recognize TradingView red/green candle colors while rejecting orange/yellow lines."""
     r, g, b = (int(v) for v in rgb)
 
-    # True red/pink candle/edge colors have a strong red dominance. The
-    # stronger ratio deliberately rejects common orange annotation lines
-    # such as RGB(220,140,0), which previously contaminated the candle runs.
+    # Strong red/pink dominance. Keep the g==0 case explicit so black pixels
+    # cannot become red merely because the ratio denominator is zero.
     red = (
         r >= 140
         and r - g >= 90
         and r - b >= 70
-        and r >= int(g * 1.65) if g > 0 else True
+        and (g == 0 or r >= int(g * 1.65))
     )
 
-    # Saturated green/cyan-green candle colors. Require green dominance over
-    # red and avoid yellow/orange where red is comparatively strong.
+    # Saturated green candle colors.
     green = (
         g >= 105
         and g - r >= 70
         and b >= 40
         and g >= int(b * 0.90)
     )
+
+    # Cyan-green candle variants used by some TradingView themes.
     cyan_green = (
         g >= 105
         and b >= 95
@@ -146,7 +146,7 @@ def _retain_series(candidates: list[PixelCandleCandidate], config: DetectorConfi
     high = pitch * config.series_gap_upper_ratio
     chains: list[list[PixelCandleCandidate]] = []
     current = [ordered[0]]
-    for prev, cur, gap in zip(ordered, ordered[1:], gaps):
+    for cur, gap in zip(ordered[1:], gaps):
         if low <= gap <= high:
             current.append(cur)
         else:
