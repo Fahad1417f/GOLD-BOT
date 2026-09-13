@@ -38,12 +38,7 @@ class PlaywrightChartReader:
         except Exception as exc:return ChartRead(reason=f"READ_FAILED:{type(exc).__name__}:{exc}")
     def _read_plot_rect(self):
         try:
-            return self.page.evaluate("""() => {
-              const els=[...document.querySelectorAll('canvas')].filter(n=>{const r=n.getBoundingClientRect();return r.width>300&&r.height>200});
-              if(!els.length)return null;
-              els.sort((a,b)=>b.getBoundingClientRect().width*b.getBoundingClientRect().height-a.getBoundingClientRect().width*a.getBoundingClientRect().height);
-              const r=els[0].getBoundingClientRect(); return [Math.round(r.x),Math.round(r.y),Math.round(r.right),Math.round(r.bottom)];
-            }""")
+            return self.page.evaluate("""() => {const els=[...document.querySelectorAll('canvas')].filter(n=>{const r=n.getBoundingClientRect();return r.width>300&&r.height>200});if(!els.length)return null;els.sort((a,b)=>b.getBoundingClientRect().width*b.getBoundingClientRect().height-a.getBoundingClientRect().width*a.getBoundingClientRect().height);const r=els[0].getBoundingClientRect();return [Math.round(r.x),Math.round(r.y),Math.round(r.right),Math.round(r.bottom)];}""")
         except Exception:return None
     def capture(self,name="tradingview_live.png"):
         if self.page is None:return None
@@ -81,21 +76,14 @@ class PlaywrightChartReader:
         if symbol is None:
             if re.search(r"\bXAU\s*/?\s*USD\b|\bXAUUSD\b",u) or "GOLD SPOT / U.S. DOLLAR" in u:symbol="XAU/USD"
             else:
-                m=re.search(r"\b([A-Z]{2,12}(?:USDT|USD|USDC)\.P)\b",u); symbol=m.group(1) if m else ("NEARUSDT.P" if "NEAR / TETHERUS PERPETUAL CONTRACT" in u else None)
+                m=re.search(r"\b([A-Z0-9]{1,12}(?:USDT|USD|USDC)\.P)\b",u); symbol=m.group(1) if m else None
+                if symbol is None and "NEAR / TETHERUS PERPETUAL CONTRACT" in u:symbol="NEARUSDT.P"
         if timeframe is None and page is not None:timeframe=PlaywrightChartReader._read_selected_timeframe(page)
         return symbol,timeframe
     @staticmethod
     def _read_selected_timeframe(page):
         try:
-            payload=page.evaluate(r"""() => {
-              const controls=[...document.querySelectorAll('button,[role="button"],[role="tab"]')].filter(n=>n.offsetParent).map(n=>({
-                text:(n.textContent||'').trim(),aria:n.getAttribute('aria-label')||'',title:n.getAttribute('title')||'',
-                ariaPressed:n.getAttribute('aria-pressed'),ariaSelected:n.getAttribute('aria-selected'),dataState:n.getAttribute('data-state'),
-                className:typeof n.className==='string'?n.className:'',dataValue:n.getAttribute('data-value')||'',
-                dataInterval:n.getAttribute('data-interval')||'',dataResolution:n.getAttribute('data-resolution')||''}));
-              const metadata=[...document.querySelectorAll('[data-interval],[data-resolution]')].map(n=>[n.getAttribute('data-interval')||'',n.getAttribute('data-resolution')||'']).flat().filter(Boolean);
-              return {controls,metadata};
-            }""")
+            payload=page.evaluate(r"""() => {const controls=[...document.querySelectorAll('button,[role="button"],[role="tab"]')].filter(n=>n.offsetParent).map(n=>({text:(n.textContent||'').trim(),aria:n.getAttribute('aria-label')||'',title:n.getAttribute('title')||'',ariaPressed:n.getAttribute('aria-pressed'),ariaSelected:n.getAttribute('aria-selected'),dataState:n.getAttribute('data-state'),className:typeof n.className==='string'?n.className:'',dataValue:n.getAttribute('data-value')||'',dataInterval:n.getAttribute('data-interval')||'',dataResolution:n.getAttribute('data-resolution')||''}));const metadata=[...document.querySelectorAll('[data-interval],[data-resolution]')].map(n=>[n.getAttribute('data-interval')||'',n.getAttribute('data-resolution')||'']).flat().filter(Boolean);return {controls,metadata};}""")
             if not isinstance(payload,dict):return None
             controls=payload.get("controls") or []; metadata=payload.get("metadata") or []
             active_values=set(); unique_values=set()
@@ -108,8 +96,7 @@ class PlaywrightChartReader:
                 if not values:continue
                 v=values[0]; unique_values.add(v)
                 state=" ".join(str(item.get(k) or "") for k in ("ariaPressed","ariaSelected","dataState","className")).lower()
-                if item.get("ariaPressed")=="true" or item.get("ariaSelected")=="true" or bool(re.search(r"(?:^|[\s_-])(selected|active|checked|isactive|is-selected)(?:$|[\s_-])",state)):
-                    active_values.add(v)
+                if item.get("ariaPressed")=="true" or item.get("ariaSelected")=="true" or bool(re.search(r"(?:^|[\s_-])(selected|active|checked|isactive|is-selected)(?:$|[\s_-])",state)):active_values.add(v)
             if len(active_values)==1:return next(iter(active_values))
             if len(active_values)>1:return None
             meta_values={PlaywrightChartReader._normalize_timeframe(v) for v in metadata}; meta_values.discard(None)
@@ -120,7 +107,7 @@ class PlaywrightChartReader:
     @staticmethod
     def _parse_title(title):
         u=(title or "").upper(); tf=re.search(r"(?<![A-Z0-9])(1|3|5|15|30|45)\s*(?:M|MIN|MINS|MINUTE|MINUTES)(?![A-Z0-9])",u); t=tf.group(1)+"m" if tf else None
-        m=re.search(r"\b([A-Z]{2,12}(?:USDT|USD|USDC)\.P)\b",u)
+        m=re.search(r"\b([A-Z0-9]{1,12}(?:USDT|USD|USDC)\.P)\b",u)
         if m:return m.group(1),t
         if re.search(r"\bXAU\s*/?\s*USD\b|\bXAUUSD\b",u):return "XAU/USD",t
         m=re.search(r"\b([A-Z]{2,10})\s*/\s*([A-Z]{2,10})\b",u); return (f"{m.group(1)}/{m.group(2)}",t) if m else (None,None)
