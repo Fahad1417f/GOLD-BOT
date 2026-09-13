@@ -1,7 +1,7 @@
 """Read-only TradingView screenshot candle geometry detector.
 
 No price/OHLC values are inferred here. The detector only proposes pixel candles.
-Verification requires geometric consistency and is fail-closed.
+Verification is fail-closed and rejects flat/degenerate structures.
 """
 from __future__ import annotations
 from dataclasses import dataclass
@@ -21,6 +21,9 @@ class DetectorConfig:
     min_body_height: int = 2
     max_body_width: int = 30
     min_confidence: float = 0.72
+    min_wick_extension: int = 2
+    min_total_height: int = 5
+    max_flat_ratio: float = 0.70
 
 @dataclass(frozen=True)
 class PixelCandleCandidate:
@@ -97,7 +100,8 @@ def detect_candles(path: str | Path, config: DetectorConfig = DetectorConfig()) 
     out = []
     for idx, group in enumerate(groups):
         x0, x1 = group[0][0], group[-1][0]
-        if x1 - x0 + 1 > config.max_body_width:
+        width = x1 - x0 + 1
+        if width > config.max_body_width:
             continue
         runs = [run for _, rs in group for run in rs]
         body_runs = [run for run in runs if run[1] - run[0] + 1 >= config.min_body_height]
@@ -107,9 +111,27 @@ def detect_candles(path: str | Path, config: DetectorConfig = DetectorConfig()) 
         body_bottom = max(bb for _, bb in body_runs)
         all_ys = [y for _, rs in group for a, bb in rs for y in range(a, bb + 1)]
         high, low = min(all_ys), max(all_ys)
+        body_h = body_bottom - body_top + 1
+        total_h = low - high + 1
+        upper_wick = body_top - high
+        lower_wick = low - body_bottom
+
+        # A valid candle must have meaningful vertical geometry. Flat 1-2px
+        # lines, isolated horizontal artifacts, and merged screen elements fail closed.
+        if total_h < config.min_total_height:
+            continue
+        if body_h < config.min_body_height:
+            continue
+        if upper_wick < config.min_wick_extension and lower_wick < config.min_wick_extension:
+            continue
+        if total_h > 0 and body_h / total_h > config.max_flat_ratio:
+            continue
+
         x = (x0 + x1) / 2
-        # Color semantics are intentionally not assumed, so polarity remains unknown.
-        confidence = min(0.99, 0.72 + min(0.20, (body_bottom - body_top + 1) / 40))
+        confidence = 0.72
+        confidence += min(0.10, body_h / 50)
+        confidence += min(0.10, (upper_wick + lower_wick) / 50)
+        confidence = min(0.99, confidence)
         if confidence < config.min_confidence:
             continue
         out.append(PixelCandleCandidate(
@@ -118,5 +140,5 @@ def detect_candles(path: str | Path, config: DetectorConfig = DetectorConfig()) 
         ))
 
     if len(out) < 3:
-        return Detection(tuple(out), False, "INSUFFICIENT_CANDLE_CANDIDATES", (l, t, r, b))
+        return Detection(tuple(out), False, "INSUFFICIENT_VERIFIED_CANDLE_GEOMETRY", (l, t, r, b))
     return Detection(tuple(out), True, "PIXEL_CANDLES_DETECTED", (l, t, r, b))
