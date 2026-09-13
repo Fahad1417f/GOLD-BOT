@@ -50,3 +50,35 @@ def test_horizontal_lines_do_not_weld_the_chart_into_one_candidate(tmp_path):
     assert r.verified
     assert r.reason == "PIXEL_CANDLES_DETECTED"
     assert len(r.candles) >= 3
+
+
+def test_lower_indicator_and_overlay_box_edges_are_rejected(tmp_path):
+    p = tmp_path / "chart_with_indicator_and_labels.png"
+    im = Image.new("RGB", (1000, 700), (15, 15, 15))
+    d = ImageDraw.Draw(im)
+
+    # Price-pane candles: regular, narrow bodies with a center wick.
+    for i, x in enumerate(range(120, 820, 18)):
+        body_top = 180 + (i % 7) * 5
+        body_bottom = body_top + 18 + (i % 3) * 4
+        color = (3, 207, 112) if i % 2 == 0 else (241, 1, 49)
+        d.rectangle((x - 4, body_top, x + 4, body_bottom), fill=color)
+        d.line((x, body_top - 14, x, body_top), fill=color, width=2)
+        d.line((x, body_bottom, x, body_bottom + 12), fill=color, width=2)
+
+    # Lower oscillator pane: deliberately candle-like red/green vertical lines.
+    for i, x in enumerate(range(120, 820, 18)):
+        y = 560 + (i % 5) * 12
+        color = (3, 207, 112) if i % 2 == 0 else (241, 1, 49)
+        d.line((x, y, x, y + 24), fill=color, width=3)
+
+    # Annotation boxes: solid colored rectangles should not be mistaken for
+    # candles merely because their vertical edges contain long colored runs.
+    d.rectangle((280, 90, 370, 125), fill=(255, 0, 85))
+    d.rectangle((610, 130, 760, 165), fill=(3, 207, 112))
+
+    im.save(p)
+    r = detect_candles(p)
+    assert r.verified
+    assert len(r.candles) >= 10
+    assert all(c.high_y < 500 for c in r.candles)
