@@ -103,7 +103,16 @@ class PlaywrightChartReader:
                 let m=s.match(/^(1m|3m|5m|15m|30m|45m|1h|2h|4h|6h|12h|1d|1w)$/i);
                 if(m)return m[1].toLowerCase();
                 m=s.match(/^(1|3|5|15|30|45)\s*(m|min|mins|minute|minutes)$/i); if(m)return m[1]+'m';
-                m=s.match(/^(1|2|4|6|12)\s*(h|hr|hrs|hour|hours)$/i); if(m)return m[1]+'h'; return null; };
+                m=s.match(/^(1|2|4|6|12)\s*(h|hr|hrs|hour|hours)$/i); if(m)return m[1]+'h';
+                if(/^(1|3|5|15|30|45)$/.test(s)) return s+'m';
+                if(s==='60') return '1h';
+                if(s==='120') return '2h';
+                if(s==='240') return '4h';
+                if(s==='360') return '6h';
+                if(s==='720') return '12h';
+                if(s==='1D') return '1d';
+                if(s==='1W') return '1w';
+                return null; };
               const controls=[];
               for(const n of document.querySelectorAll('button,[role="button"],[role="tab"]')){
                 if(n.offsetParent===null)continue; const r=n.getBoundingClientRect();
