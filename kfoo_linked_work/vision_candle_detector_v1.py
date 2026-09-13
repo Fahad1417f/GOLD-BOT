@@ -1,7 +1,8 @@
 """Read-only TradingView screenshot candle geometry detector.
 
 No price/OHLC values are inferred here. The detector only proposes pixel candles.
-Verification is fail-closed and requires a wide body core plus wick geometry.
+Verification is fail-closed. Horizontal chart lines and dashed overlays are
+ignored by requiring a contiguous candle-colored vertical run per image column.
 """
 from __future__ import annotations
 from dataclasses import dataclass
@@ -11,6 +12,7 @@ try:
     from PIL import Image
 except Exception:
     Image = None
+
 
 @dataclass(frozen=True)
 class DetectorConfig:
@@ -24,7 +26,10 @@ class DetectorConfig:
     min_wick_extension: int = 2
     min_total_height: int = 5
     min_core_width_ratio: float = 0.50
-    max_body_to_total_ratio: float = 0.85
+    max_body_to_total_ratio: float = 0.92
+    min_vertical_run: int = 6
+    max_vertical_gap: int = 20
+
 
 @dataclass(frozen=True)
 class PixelCandleCandidate:
@@ -39,6 +44,7 @@ class PixelCandleCandidate:
     polarity: str
     confidence: float
 
+
 @dataclass(frozen=True)
 class Detection:
     candles: tuple[PixelCandleCandidate, ...]
@@ -46,10 +52,15 @@ class Detection:
     reason: str
     roi: tuple[int, int, int, int] | None
 
-def _signal(rgb: tuple[int, int, int]) -> bool:
+
+def _candle_color(rgb: tuple[int, int, int]) -> bool:
+    """Broad red/green candle palette, excluding grey/yellow/orange plot lines."""
     r, g, b = rgb
-    mx, mn = max(rgb), min(rgb)
-    return (mx - mn >= 45 and mx >= 75) or (mx - mn >= 28 and mx >= 150)
+    red = r >= 120 and r - g >= 60 and r - b >= 20
+    green = g >= 100 and g - r >= 45 and g - b >= -30 and b >= 40
+    cyan_green = g >= 105 and b >= 95 and g - r >= 50 and b - r >= 35
+    return red or green or cyan_green
+
 
 def _runs(ys: list[int]) -> list[tuple[int, int]]:
     if not ys:
@@ -65,6 +76,12 @@ def _runs(ys: list[int]) -> list[tuple[int, int]]:
     out.append((start, prev))
     return out
 
+
+def _longest_run(ys: list[int]) -> tuple[int, int] | None:
+    runs = _runs(ys)
+    return max(runs, key=lambda q: q[1] - q[0], default=None)
+
+
 def detect_candles(path: str | Path, config: DetectorConfig = DetectorConfig()) -> Detection:
     if Image is None:
         return Detection((), False, "PIL_NOT_INSTALLED", None)
@@ -73,84 +90,107 @@ def detect_candles(path: str | Path, config: DetectorConfig = DetectorConfig()) 
     except Exception as exc:
         return Detection((), False, f"IMAGE_READ_FAILED:{type(exc).__name__}", None)
 
-    w, h = im.size
-    l = max(0, config.roi_left)
-    t = max(0, config.roi_top)
-    r = min(w, config.roi_right if config.roi_right is not None else w - 55)
-    b = min(h, config.roi_bottom if config.roi_bottom is not None else h - 70)
-    if r - l < 100 or b - t < 100:
-        return Detection((), False, "ROI_TOO_SMALL", (l, t, r, b))
+    width, height = im.size
+    left = max(0, config.roi_left)
+    top = max(0, config.roi_top)
+    right = min(width, config.roi_right if config.roi_right is not None else width - 55)
+    bottom = min(height, config.roi_bottom if config.roi_bottom is not None else height - 70)
+    roi = (left, top, right, bottom)
+    if right - left < 100 or bottom - top < 100:
+        return Detection((), False, "ROI_TOO_SMALL", roi)
 
     pix = im.load()
-    columns = []
-    for x in range(l, r):
-        ys = [y for y in range(t, b) if _signal(pix[x, y])]
-        rs = _runs(ys)
-        if rs:
-            columns.append((x, rs))
+
+    # Key change from the previous detector:
+    # analyse each x-column independently and keep only its longest contiguous
+    # candle-colored vertical run. Horizontal gridlines/trendlines therefore
+    # cannot weld the whole chart into one giant candidate group.
+    columns: list[tuple[int, tuple[int, int]]] = []
+    for x in range(left, right):
+        ys = [y for y in range(top, bottom) if _candle_color(pix[x, y])]
+        run = _longest_run(ys)
+        if run and run[1] - run[0] + 1 >= config.min_vertical_run:
+            columns.append((x, run))
+
     if not columns:
-        return Detection((), False, "NO_CHROMATIC_CANDLE_PIXELS", (l, t, r, b))
+        return Detection((), False, "NO_CANDLE_COLOR_VERTICAL_RUNS", roi)
 
-    groups = []
-    cur = [columns[0]]
+    groups: list[list[tuple[int, tuple[int, int]]]] = []
+    current = [columns[0]]
     for item in columns[1:]:
-        if item[0] <= cur[-1][0] + 2:
-            cur.append(item)
+        x, (a, bb) = item
+        prev_x, (pa, pb) = current[-1]
+        near_y = not (a > pb + config.max_vertical_gap or bb < pa - config.max_vertical_gap)
+        if x <= prev_x + 2 and near_y:
+            current.append(item)
         else:
-            groups.append(cur)
-            cur = [item]
-    groups.append(cur)
+            groups.append(current)
+            current = [item]
+    groups.append(current)
 
-    out = []
+    out: list[PixelCandleCandidate] = []
     for idx, group in enumerate(groups):
         x0, x1 = group[0][0], group[-1][0]
-        width = x1 - x0 + 1
-        if width > config.max_body_width or width < 2:
+        body_width = x1 - x0 + 1
+        if body_width < 2 or body_width > config.max_body_width:
             continue
 
-        per_col = [rs for _, rs in group]
-        min_y = max(a for rs in per_col for a, _ in rs)
-        max_y = min(bb for rs in per_col for _, bb in rs)
-        if min_y > max_y:
-            continue
+        spans = [span for _, span in group]
+        high = min(a for a, _ in spans)
+        low = max(bb for _, bb in spans)
+        total_height = low - high + 1
 
-        # A body row must be present in at least a configurable fraction of
-        # the candidate columns. This separates a real body from a 1px wick.
-        core_threshold = max(2, int(round(len(per_col) * config.min_core_width_ratio)))
-        core_rows = []
-        for y in range(min_y, max_y + 1):
-            covered = sum(any(a <= y <= bb for a, bb in rs) for rs in per_col)
+        core_threshold = max(2, int(round(len(spans) * config.min_core_width_ratio)))
+        core_rows: list[int] = []
+        for y in range(high, low + 1):
+            covered = sum(a <= y <= bb for a, bb in spans)
             if covered >= core_threshold:
                 core_rows.append(y)
-
         body_runs = _runs(core_rows)
         if not body_runs:
             continue
-        body_top, body_bottom = max(body_runs, key=lambda q: q[1] - q[0])[0], max(body_runs, key=lambda q: q[1] - q[0])[1]
-        body_h = body_bottom - body_top + 1
 
-        all_ys = [y for _, rs in group for a, bb in rs for y in range(a, bb + 1)]
-        high, low = min(all_ys), max(all_ys)
-        total_h = low - high + 1
+        body_top, body_bottom = max(body_runs, key=lambda q: q[1] - q[0])
+        body_height = body_bottom - body_top + 1
         upper_wick = body_top - high
         lower_wick = low - body_bottom
 
-        if body_h < config.min_body_height or total_h < config.min_total_height:
+        if body_height < config.min_body_height or total_height < config.min_total_height:
             continue
-        if upper_wick < config.min_wick_extension and lower_wick < config.min_wick_extension:
+        if max(upper_wick, lower_wick) < config.min_wick_extension:
             continue
-        if total_h and body_h / total_h > config.max_body_to_total_ratio:
+        if body_height / total_height > config.max_body_to_total_ratio:
             continue
 
-        confidence = min(0.99, 0.72 + min(0.10, body_h / 50) + min(0.10, (upper_wick + lower_wick) / 50))
+        body_coverage = max(
+            sum(a <= y <= bb for a, bb in spans)
+            for y in range(body_top, body_bottom + 1)
+        )
+        confidence = min(
+            0.99,
+            0.72
+            + min(0.10, body_height / 50)
+            + min(0.10, (upper_wick + lower_wick) / 50)
+            + min(0.06, (body_coverage / len(spans)) * 0.06),
+        )
         if confidence < config.min_confidence:
             continue
-        x = (x0 + x1) / 2
-        out.append(PixelCandleCandidate(
-            idx, x, body_bottom, high, low, body_top,
-            body_top, body_bottom, "unknown", confidence
-        ))
+
+        out.append(
+            PixelCandleCandidate(
+                idx,
+                (x0 + x1) / 2,
+                body_bottom,
+                high,
+                low,
+                body_top,
+                body_top,
+                body_bottom,
+                "unknown",
+                confidence,
+            )
+        )
 
     if len(out) < 3:
-        return Detection(tuple(out), False, "INSUFFICIENT_VERIFIED_CANDLE_GEOMETRY", (l, t, r, b))
-    return Detection(tuple(out), True, "PIXEL_CANDLES_DETECTED", (l, t, r, b))
+        return Detection(tuple(out), False, "INSUFFICIENT_VERIFIED_CANDLE_GEOMETRY", roi)
+    return Detection(tuple(out), True, "PIXEL_CANDLES_DETECTED", roi)
