@@ -85,11 +85,76 @@ class PlaywrightChartReader:
     @staticmethod
     def _read_selected_timeframe(page):
         try:
-            r=page.evaluate("""() => [...document.querySelectorAll('button,[role="button"],[role="tab"]')].filter(n=>n.offsetParent).map(n=>({t:(n.textContent||'').trim(),a:n.getAttribute('aria-label'),p:n.getAttribute('aria-pressed'),s:n.getAttribute('aria-selected'),c:typeof n.className==='string'?n.className:''})).map(x=>{const v=[x.a,x.t].find(v=>/^(1|3|5|15|30|45)\s*(m|min|minute|minutes)?$/i.test((v||'').trim()));return v?{...x,v}:null}).filter(Boolean)""")
-            selected=[x for x in (r or []) if x["p"]=="true" or x["s"]=="true" or re.search(r"selected|active",x["c"],re.I)]
-            vals={self._normalize_timeframe(x["v"]) for x in selected if self._normalize_timeframe(x["v"])}
-            return next(iter(vals)) if len(vals)==1 else None
-        except Exception:return None
+            payload=page.evaluate(r"""() => {
+              const nodes=[...document.querySelectorAll('button,[role="button"],[role="tab"]')];
+              const controls=nodes.filter(n=>n.offsetParent).map(n=>({
+                text:(n.textContent||'').trim(),
+                aria:n.getAttribute('aria-label')||'',
+                title:n.getAttribute('title')||'',
+                ariaPressed:n.getAttribute('aria-pressed'),
+                ariaSelected:n.getAttribute('aria-selected'),
+                dataState:n.getAttribute('data-state'),
+                className:typeof n.className==='string'?n.className:'',
+                dataInterval:n.getAttribute('data-interval')||'',
+                dataResolution:n.getAttribute('data-resolution')||''
+              }));
+              const metadata=[...document.querySelectorAll('[data-interval],[data-resolution]')].map(n=>[
+                n.getAttribute('data-interval')||'',n.getAttribute('data-resolution')||''
+              ]).flat().filter(Boolean);
+              return {controls,metadata};
+            }""")
+            if not isinstance(payload,dict):
+                return None
+
+            controls=payload.get("controls") or []
+            metadata=payload.get("metadata") or []
+
+            # Test/fallback adapters may expose a direct timeframe field.
+            direct=[]
+            for item in controls:
+                if isinstance(item,dict):
+                    for key in ("tf","timeframe","dataInterval","dataResolution"):
+                        v=PlaywrightChartReader._normalize_timeframe(item.get(key))
+                        if v: direct.append((v,item))
+            meta_values={PlaywrightChartReader._normalize_timeframe(v) for v in metadata
+                         if PlaywrightChartReader._normalize_timeframe(v)}
+
+            candidates=[]
+            for item in controls:
+                if not isinstance(item,dict): continue
+                values=[]
+                for key in ("aria","title","text","tf","timeframe","dataInterval","dataResolution"):
+                    v=PlaywrightChartReader._normalize_timeframe(item.get(key))
+                    if v and v not in values: values.append(v)
+                if not values: continue
+                state_parts=" ".join(str(item.get(k) or "") for k in
+                                     ("ariaPressed","ariaSelected","dataState","className")).lower()
+                active=(item.get("ariaPressed")=="true" or item.get("ariaSelected")=="true" or
+                        item.get("p")=="true" or item.get("s")=="true" or
+                        bool(re.search(r"selected|active|checked",state_parts)))
+                candidates.append((values[0],active))
+
+            active_values={v for v,active in candidates if active}
+            if len(active_values)==1:
+                return next(iter(active_values))
+
+            # A single explicit page-level timeframe is safe; a menu with several is not.
+            if len(meta_values)==1:
+                return next(iter(meta_values))
+
+            # A single unambiguous toolbar control is safe even without ARIA state.
+            unique_values={v for v,_ in candidates}
+            if len(unique_values)==1:
+                return next(iter(unique_values))
+
+            # Direct fake/adaptor metadata can still be used if it yields one value.
+            direct_values={v for v,_ in direct}
+            if len(direct_values)==1:
+                return next(iter(direct_values))
+            return None
+        except Exception:
+            return None
+
     @staticmethod
     def _parse_title(title):
         u=(title or "").upper(); tf=re.search(r"(?<![A-Z0-9])(1|3|5|15|30|45)\s*(?:M|MIN|MINS|MINUTE|MINUTES)(?![A-Z0-9])",u)
