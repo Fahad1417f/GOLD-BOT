@@ -33,6 +33,22 @@ def _roi_from_plot(reader, screenshot_path, plot_rect):
         return DetectorConfig()
 
 
+def _candle_limit() -> int:
+    """Limit visual candle monitoring depth; KFOO itself remains the signal source."""
+    raw = os.getenv("GOLDBOT_VISION_CANDLE_LIMIT", "24").strip()
+    try:
+        return max(3, min(60, int(raw)))
+    except ValueError:
+        return 24
+
+
+def _limit_recent_candles(candles):
+    """Keep only the most recent x-ordered candidates for live monitoring."""
+    limit = _candle_limit()
+    ordered = sorted(candles, key=lambda candle: candle.x)
+    return ordered[-limit:]
+
+
 def capture_once(cdp_url: str | None = None, output_dir: str = "artifacts/vision") -> dict:
     reader = PlaywrightChartReader(cdp_url=cdp_url, screenshot_dir=output_dir)
     try:
@@ -46,8 +62,11 @@ def capture_once(cdp_url: str | None = None, output_dir: str = "artifacts/vision
             result.screenshot_path,
             _roi_from_plot(reader, result.screenshot_path, result.plot_rect),
         )
-        data["pixel_candles_available"] = bool(detection.verified)
-        data["pixel_candle_count"] = len(detection.candles)
+        monitored = _limit_recent_candles(detection.candles)
+        data["pixel_candles_available"] = bool(detection.verified and monitored)
+        data["pixel_candle_count"] = len(monitored)
+        data["pixel_candle_limit"] = _candle_limit()
+        data["pixel_candle_raw_count"] = len(detection.candles)
         data["pixel_candle_reason"] = detection.reason
         data["pixel_candle_roi"] = detection.roi
         data["pixel_candles"] = [
@@ -63,7 +82,7 @@ def capture_once(cdp_url: str | None = None, output_dir: str = "artifacts/vision
                 "polarity": c.polarity,
                 "confidence": c.confidence,
             }
-            for c in detection.candles
+            for c in monitored
         ]
         data["ohlc_verified"] = False
         data["ohlc_reason"] = "PRICE_SCALE_ANCHORS_NOT_VERIFIED"
