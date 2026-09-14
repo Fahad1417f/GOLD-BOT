@@ -66,33 +66,76 @@ def _header_match(reader,monitored):
     p=best[3]
     return [ScaleAnchor(p.high_y,h["h"]),ScaleAnchor(p.low_y,h["l"])],{"reason":"HEADER_OHLC_PIXEL_ALIGNMENT_VERIFIED","header_ohlc":h,"matched_index":p.index,"normalized_error":round(best[1],6)}
 
-def _ocr_scale_anchors(screenshot_path,plot_rect):
+def _viewport(reader):
+    try:
+        v=reader.page.evaluate("() => ({w: window.innerWidth, h: window.innerHeight})")
+        w=float(v.get("w") or 0); h=float(v.get("h") or 0)
+        if w>0 and h>0:return w,h
+    except Exception as exc:_trace("OCR_VIEWPORT_ERROR",error=f"{type(exc).__name__}:{exc}")
+    return None,None
+
+def _ocr_scale_anchors(reader,screenshot_path,plot_rect):
     exe=shutil.which("tesseract")
     if not exe:return [],{"reason":"TESSERACT_NOT_INSTALLED"}
     try:
-        from PIL import Image
+        from PIL import Image,ImageOps,ImageEnhance,ImageFilter
         with Image.open(screenshot_path) as im:
-            sw,sh=im.size; x0,y0,x1,y1=[int(v) for v in plot_rect]
-            left=max(0,min(sw-1,x1+2)); top=max(0,y0); right=sw; bottom=min(sh,y1)
-            if left>=right:return [],{"reason":"OCR_SCALE_ROI_EMPTY"}
-            tmp=str(screenshot_path)+".scale_ocr.png"; im.crop((left,top,right,bottom)).save(tmp)
-        proc=subprocess.run([exe,tmp,"stdout","--psm","6","-c","tessedit_char_whitelist=0123456789.,-","tsv"],capture_output=True,text=True,encoding="utf-8",errors="backslashreplace",timeout=2)
-        anchors=[]
-        for line in proc.stdout.splitlines()[1:]:
-            cols=line.split("\t")
-            if len(cols)<12:continue
-            price=_parse_num(cols[11].strip())
-            if price is None or price<1000:continue
-            try:box_top=float(cols[7]); height=float(cols[9])
-            except ValueError:continue
-            y=top+box_top+height/2
-            if y0<=y<=y1:anchors.append(ScaleAnchor(y,price))
-        try:os.remove(tmp)
-        except OSError:pass
-        anchors=sorted(anchors,key=lambda a:a.y)
-        for a,b in zip(anchors,anchors[1:]):
-            if b.y-a.y>=10 and b.price<a.price:return [a,b],{"reason":"OCR_SCALE_ANCHORS_FOUND","candidate_count":len(anchors)}
-        return [],{"reason":"OCR_NO_MONOTONIC_PRICE_PAIR","candidate_count":len(anchors)}
+            sw,sh=im.size
+            x0,y0,x1,y1=[float(v) for v in plot_rect]
+            vw,vh=_viewport(reader)
+            if vw and vh:
+                sx,sy=sw/vw,sh/vh
+                scale_source="viewport"
+            else:
+                sx=max(1.0,sw/max(1.0,x1)); sy=max(1.0,sh/max(1.0,y1)); scale_source="inferred"
+            px0=max(0,min(sw-1,int(round(x0*sx))))
+            py0=max(0,min(sh-1,int(round(y0*sy))))
+            px1=max(px0+1,min(sw,int(round(x1*sx))))
+            py1=max(py0+1,min(sh,int(round(y1*sy))))
+            band=max(120,int(round(260*sx)))
+            rois=[]
+            right_left=max(px0,px1-band)
+            right_box=(right_left,py0,px1,py1)
+            rois.append(("right",right_box))
+            left_right=min(px1,px0+band)
+            left_box=(px0,py0,left_right,py1)
+            if left_box!=right_box:rois.append(("left",left_box))
+            all_candidates=[]; pass_diags=[]
+            _trace("OCR_SCALE_GEOMETRY",screenshot=[sw,sh],viewport=[vw,vh],scale=[round(sx,4),round(sy,4)],scale_source=scale_source,plot_rect=list(plot_rect),pixel_rect=[px0,py0,px1,py1],rois=[list(r[1]) for r in rois])
+            for side,box in rois:
+                crop=im.crop(box)
+                gray=ImageOps.grayscale(crop)
+                gray=ImageEnhance.Contrast(gray).enhance(2.2)
+                gray=gray.resize((max(1,gray.width*2),max(1,gray.height*2)))
+                gray=gray.filter(ImageFilter.SHARPEN)
+                tmp=f"{screenshot_path}.{side}.scale_ocr.png"
+                gray.save(tmp)
+                for psm in (6,11):
+                    proc=subprocess.run([exe,tmp,"stdout","--psm",str(psm),"-c","tessedit_char_whitelist=0123456789.,-"],capture_output=True,text=True,encoding="utf-8",errors="backslashreplace",timeout=2)
+                    count=0
+                    for line in proc.stdout.splitlines()[1:]:
+                        cols=line.split("\t")
+                        if len(cols)<12:continue
+                        price=_parse_num(cols[11].strip())
+                        if price is None or price<1000:continue
+                        try:box_top=float(cols[7]); height=float(cols[9])
+                        except ValueError:continue
+                        # OCR image is 2x enlarged; convert local OCR y back to screenshot pixels.
+                        local_y=(box_top+height/2)/2.0
+                        y=box[1]+local_y
+                        if py0<=y<=py1:
+                            all_candidates.append(ScaleAnchor(y,price)); count+=1
+                    pass_diags.append({"side":side,"psm":psm,"candidate_count":count})
+                try:os.remove(tmp)
+                except OSError:pass
+        anchors=sorted(all_candidates,key=lambda a:a.y)
+        dedup=[]
+        for a in anchors:
+            if not dedup or abs(a.y-dedup[-1].y)>4 or abs(a.price-dedup[-1].price)>0.5:dedup.append(a)
+        for a,b in zip(dedup,dedup[1:]):
+            if b.y-a.y>=10 and b.price<a.price:
+                return [a,b],{"reason":"OCR_SCALE_ANCHORS_FOUND","candidate_count":len(dedup),"passes":pass_diags}
+        return [],{"reason":"OCR_NO_MONOTONIC_PRICE_PAIR","candidate_count":len(dedup),"passes":pass_diags}
     except Exception as exc:return [],{"reason":f"OCR_SCALE_READ_FAILED:{type(exc).__name__}:{exc}"}
 
 def _verify(reader,screenshot_path,plot_rect,monitored):
@@ -101,7 +144,7 @@ def _verify(reader,screenshot_path,plot_rect,monitored):
     source="dom"
     diagnostics={"dom":dom_diag}
     if len(anchors)<2:
-        anchors,ocr_diag=_ocr_scale_anchors(screenshot_path,plot_rect); source="ocr" if len(anchors)>=2 else source
+        anchors,ocr_diag=_ocr_scale_anchors(reader,screenshot_path,plot_rect); source="ocr" if len(anchors)>=2 else source
         diagnostics["ocr"]=ocr_diag
     if len(anchors)<2:
         anchors,header_diag=_header_match(reader,monitored); source="header_match" if len(anchors)>=2 else source
