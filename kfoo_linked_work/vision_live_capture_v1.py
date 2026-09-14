@@ -4,6 +4,7 @@ import argparse
 import json
 import os
 import re
+import sys
 import time
 from pathlib import Path
 
@@ -15,6 +16,14 @@ except ImportError:
     from playwright_chart_reader import PlaywrightChartReader
     from vision_candle_detector_v1 import detect_candles, DetectorConfig
     from vision_screen_reconstructor_v1 import PixelCandle, ScaleAnchor, VisionScreenReconstructorV1
+
+
+def _configure_utf8_stdio() -> None:
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="backslashreplace")
+        except Exception:
+            pass
 
 
 def _candle_limit() -> int:
@@ -230,6 +239,7 @@ def _run_loop(cdp_url,output_dir,interval):
 
 
 def main(capture_fn=None):
+    _configure_utf8_stdio()
     parser=argparse.ArgumentParser(add_help=True); parser.add_argument("--loop",action="store_true"); parser.add_argument("--interval",type=float,default=_monitor_interval()); parser.add_argument("--output-dir",default="artifacts/vision")
     args,_unknown=parser.parse_known_args(); fn=capture_once if capture_fn is None else capture_fn
     if args.loop and capture_fn is None: return _run_loop(os.getenv("TRADINGVIEW_CDP_URL"),args.output_dir,max(3.0,min(300.0,args.interval)))
