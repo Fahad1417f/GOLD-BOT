@@ -15,7 +15,6 @@ except ImportError:
 
 
 def _candle_limit() -> int:
-    """Limit visual candle monitoring depth; KFOO itself remains the signal source."""
     raw = os.getenv("GOLDBOT_VISION_CANDLE_LIMIT", "24").strip()
     try:
         return max(3, min(60, int(raw)))
@@ -32,14 +31,12 @@ def _monitor_interval() -> float:
 
 
 def _limit_recent_candles(candles):
-    """Keep only the most recent x-ordered candidates for live monitoring."""
     limit = _candle_limit()
     ordered = sorted(candles, key=lambda candle: candle.x)
     return ordered[-limit:]
 
 
 def _build_vision_gate(data: dict) -> dict:
-    """Combine chart identity, visual geometry, OHLC and KFOO readiness without promoting pixels to prices."""
     kfoo = data.get("kfoo") if isinstance(data.get("kfoo"), dict) else {}
     identity_verified = bool(data.get("capture_verified"))
     geometry_verified = bool(data.get("pixel_candles_available")) and int(data.get("pixel_candle_count") or 0) >= 3
@@ -121,9 +118,7 @@ def capture_once(cdp_url: str | None = None, output_dir: str = "artifacts/vision
         ]
         data["ohlc_verified"] = False
         data["ohlc_reason"] = "PRICE_SCALE_ANCHORS_NOT_VERIFIED"
-        data["capture_verified"] = bool(
-            result.connected and result.symbol and result.timeframe and result.screenshot_path
-        )
+        data["capture_verified"] = bool(result.connected and result.symbol and result.timeframe and result.screenshot_path)
         data["vision_gate"] = _build_vision_gate(data)
         return data
     finally:
@@ -139,7 +134,6 @@ def _write_state(data: dict, output_dir: str) -> None:
 
 
 def _run_loop(cdp_url: str | None, output_dir: str, interval: float) -> int:
-    """Run continuous read-only screen monitoring with automatic recovery."""
     print("VISION_CONTINUOUS=ON")
     print("EXECUTION=OFF")
     print(f"INTERVAL_SECONDS={interval:g}")
@@ -147,13 +141,19 @@ def _run_loop(cdp_url: str | None, output_dir: str, interval: float) -> int:
         try:
             data = capture_once(cdp_url, output_dir)
             _write_state(data, output_dir)
+            gate = data.get("vision_gate") or {}
             summary = {
                 "connected": data.get("connected"),
                 "verified": data.get("verified"),
+                "capture_verified": data.get("capture_verified"),
                 "symbol": data.get("symbol"),
                 "timeframe": data.get("timeframe"),
+                "kfoo_present": (data.get("kfoo") or {}).get("present"),
+                "kfoo_signal_ready": gate.get("kfoo_signal_ready"),
+                "pixel_geometry_verified": gate.get("pixel_geometry_verified"),
+                "ohlc_verified": gate.get("ohlc_verified"),
                 "pixel_candles": data.get("pixel_candle_count", 0),
-                "vision_reason": (data.get("vision_gate") or {}).get("reason"),
+                "vision_reason": gate.get("reason") or data.get("reason"),
             }
             print(json.dumps(summary, ensure_ascii=False), flush=True)
         except KeyboardInterrupt:
@@ -182,20 +182,15 @@ def _run_loop(cdp_url: str | None, output_dir: str, interval: float) -> int:
 
 
 def main(capture_fn=None) -> int:
-    # Test callers inject capture_fn; do not parse pytest's argv in that mode.
-    if capture_fn is not None:
-        data = capture_fn(os.getenv("TRADINGVIEW_CDP_URL"))
-        print(json.dumps(data, ensure_ascii=False, indent=2))
-        return 0 if data.get("capture_verified") else 2
-
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(add_help=True)
     parser.add_argument("--loop", action="store_true", help="continuous read-only monitoring")
     parser.add_argument("--interval", type=float, default=_monitor_interval())
     parser.add_argument("--output-dir", default="artifacts/vision")
-    args = parser.parse_args()
-    if args.loop:
+    args, _unknown = parser.parse_known_args()
+    fn = capture_once if capture_fn is None else capture_fn
+    if args.loop and capture_fn is None:
         return _run_loop(os.getenv("TRADINGVIEW_CDP_URL"), args.output_dir, max(3.0, min(300.0, args.interval)))
-    data = capture_once(os.getenv("TRADINGVIEW_CDP_URL"), args.output_dir)
+    data = fn(os.getenv("TRADINGVIEW_CDP_URL"))
     print(json.dumps(data, ensure_ascii=False, indent=2))
     return 0 if data.get("capture_verified") else 2
 
