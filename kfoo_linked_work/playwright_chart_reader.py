@@ -53,7 +53,9 @@ class PlaywrightChartReader:
             tv = [p for p in pages if "tradingview.com" in (p.url or "").lower()]
             if not tv:
                 return ChartRead(reason="TRADINGVIEW_PAGE_NOT_FOUND")
-            self.page = tv[0]
+            # TradingView can leave an older/hung tab open while the browser opens a fresh
+            # replacement chart page. Prefer the newest TradingView page exposed by CDP.
+            self.page = tv[-1]
             return self.read()
         except Exception as exc:
             return ChartRead(reason=f"CDP_CONNECT_FAILED:{type(exc).__name__}:{exc}")
