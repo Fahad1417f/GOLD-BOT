@@ -119,11 +119,6 @@ class PlaywrightChartReader:
 
     @classmethod
     def _parse_kfoo_state(cls, text: str) -> dict:
-        """Expose KFOO-labelled state and a conservative visual-monitoring profile.
-
-        Values are taken from visible text only. The profile describes what should
-        be watched; it never turns colours or unlabelled numbers into a trade.
-        """
         t = text or ""
         u = t.upper()
         present = bool("KFOO AI" in u or "KFOO WHALE" in u)
@@ -133,7 +128,6 @@ class PlaywrightChartReader:
         tf_agg = cls._last_value(t, (r"KFOO_TF_AGG_15M=([^\r\n]+)",), "—")
         ind_agg = cls._last_value(t, (r"KFOO_IND_AGG_15M=([^\r\n]+)",), "—")
         signal_id = cls._last_value(t, (r"SIGNAL_ID=([^\s]+)", r"eventId=([^\s]+)"), "")
-
         if re.search(r"STRONG_ENTRY|STRONG_SIGNAL|FAST_TRADE_READY=TRUE", t, re.I):
             level = "STRONG_ENTRY"
         elif re.search(r"STRONG_SETUP|SETUP_READY", t, re.I):
@@ -141,17 +135,13 @@ class PlaywrightChartReader:
         else:
             level = "NONE"
 
-        # KFOO visual terms visible in the supplied TradingView configuration.
-        swing_enabled = bool(re.search(r"رصد\s*سوينغ|SWING", t, re.I))
+        swing_enabled = bool(re.search(r"رصد\s*سوينق|رصد\s*سوينغ|SWING", t, re.I))
         lightning_enabled = bool(re.search(r"رصد\s*البرق|مضاربة\s*سكالب|LIGHTNING|SCALP", t, re.I))
         continuity_enabled = bool(re.search(r"متوسط\s*الاستمرارية|CONTINUITY", t, re.I))
-        risk_ratio_enabled = bool(re.search(r"ريسك\s*ريشيو|RISK\s*RATIO|RISK", t, re.I))
+        risk_ratio_enabled = bool(re.search(r"ريسك\s*ريشيو|RISK\s*RATIO", t, re.I))
         whale_enabled = bool(re.search(r"KFOO\s*WHALE", t, re.I))
-
-        # Numeric KFOO timeframe controls exposed by the UI, retained only as
-        # configuration metadata. We do not infer signal direction from them.
         tf_tokens = []
-        for token in re.findall(r"(?<![A-Za-z0-9])(1|3|5|15|30|45|60|240|1440)(?![A-Za-z0-9])", t):
+        for token in re.findall(r"(?<![A-Za-z0-9])(1|3|5|15|30|45|60|120|240|360|720|1440)(?![A-Za-z0-9])", t):
             normalized = cls._normalize_timeframe(token)
             if normalized and normalized not in tf_tokens:
                 tf_tokens.append(normalized)
@@ -226,62 +216,44 @@ class PlaywrightChartReader:
     @staticmethod
     def _read_selected_timeframe(page):
         try:
-            payload = page.evaluate(
-                r"""() => {const controls=[...document.querySelectorAll('button,[role="button"],[role="tab"]')].filter(n=>n.offsetParent).map(n=>({text:(n.textContent||'').trim(),aria:n.getAttribute('aria-label')||'',title:n.getAttribute('title')||'',ariaPressed:n.getAttribute('aria-pressed'),ariaSelected:n.getAttribute('aria-selected'),dataState:n.getAttribute('data-state'),className:typeof n.className==='string'?n.className:'',dataValue:n.getAttribute('data-value')||'',dataInterval:n.getAttribute('data-interval')||'',dataResolution:n.getAttribute('data-resolution')||''}));const metadata=[...document.querySelectorAll('[data-interval],[data-resolution]')].map(n=>[n.getAttribute('data-interval')||'',n.getAttribute('data-resolution')||'']).flat().filter(Boolean);return {controls,metadata};}"""
-            )
+            payload = page.evaluate(r"""() => {const controls=[...document.querySelectorAll('button,[role=\"button\"],[role=\"tab\"]')].filter(n=>n.offsetParent).map(n=>({text:(n.textContent||'').trim(),aria:n.getAttribute('aria-label')||'',title:n.getAttribute('title')||'',ariaPressed:n.getAttribute('aria-pressed'),ariaSelected:n.getAttribute('aria-selected'),dataState:n.getAttribute('data-state'),className:typeof n.className==='string'?n.className:'',dataValue:n.getAttribute('data-value')||'',dataInterval:n.getAttribute('data-interval')||'',dataResolution:n.getAttribute('data-resolution')||''}));const metadata=[...document.querySelectorAll('[data-interval],[data-resolution]')].map(n=>[n.getAttribute('data-interval')||'',n.getAttribute('data-resolution')||'']).flat().filter(Boolean);return {controls,metadata};}""")
             if not isinstance(payload, dict):
                 return None
             controls = payload.get("controls") or []
             metadata = payload.get("metadata") or []
-            active_values = set()
-            unique_values = set()
+            active_values = set(); unique_values = set()
             for item in controls:
-                if not isinstance(item, dict):
-                    continue
-                values = []
-                for key in ("aria", "title", "text", "dataValue", "dataInterval", "dataResolution"):
-                    v = PlaywrightChartReader._normalize_timeframe(item.get(key))
-                    if v and v not in values:
-                        values.append(v)
-                if not values:
-                    continue
-                v = values[0]
-                unique_values.add(v)
-                state = " ".join(str(item.get(k) or "") for k in ("ariaPressed", "ariaSelected", "dataState", "className")).lower()
-                if item.get("ariaPressed") == "true" or item.get("ariaSelected") == "true" or bool(re.search(r"(?:^|[\s_-])(selected|active|checked|isactive|is-selected)(?:$|[\s_-])", state)):
-                    active_values.add(v)
-            if len(active_values) == 1:
-                return next(iter(active_values))
-            if len(active_values) > 1:
-                return None
-            meta_values = {PlaywrightChartReader._normalize_timeframe(v) for v in metadata}
-            meta_values.discard(None)
-            if len(meta_values) == 1:
-                return next(iter(meta_values))
-            if len(unique_values) == 1:
-                return next(iter(unique_values))
+                if not isinstance(item, dict): continue
+                values=[]
+                for key in ("aria","title","text","dataValue","dataInterval","dataResolution"):
+                    v=PlaywrightChartReader._normalize_timeframe(item.get(key))
+                    if v and v not in values: values.append(v)
+                if not values: continue
+                v=values[0]; unique_values.add(v)
+                state=" ".join(str(item.get(k) or "") for k in ("ariaPressed","ariaSelected","dataState","className")).lower()
+                if item.get("ariaPressed")=="true" or item.get("ariaSelected")=="true" or bool(re.search(r"(?:^|[\s_-])(selected|active|checked|isactive|is-selected)(?:$|[\s_-])", state)): active_values.add(v)
+            if len(active_values)==1: return next(iter(active_values))
+            if len(active_values)>1: return None
+            meta_values={PlaywrightChartReader._normalize_timeframe(v) for v in metadata}; meta_values.discard(None)
+            if len(meta_values)==1: return next(iter(meta_values))
+            if len(unique_values)==1: return next(iter(unique_values))
             return None
         except Exception:
             return None
 
     @staticmethod
     def _parse_title(title):
-        u = (title or "").upper()
-        tf = re.search(r"(?<![A-Z0-9])(1|3|5|15|30|45)\s*(?:M|MIN|MINS|MINUTE|MINUTES)(?![A-Z0-9])", u)
-        t = tf.group(1) + "m" if tf else None
-        m = re.search(r"\b([A-Z0-9]{1,12}(?:USDT|USD|USDC)\.P)\b", u)
-        if m:
-            return m.group(1), t
-        if re.search(r"\bXAU\s*/?\s*USD\b|\bXAUUSD\b", u):
-            return "XAU/USD", t
-        m = re.search(r"\b([A-Z]{2,10})\s*/\s*([A-Z]{2,10})\b", u)
-        return (f"{m.group(1)}/{m.group(2)}", t) if m else (None, None)
+        u=(title or "").upper()
+        tf=re.search(r"(?<![A-Z0-9])(1|3|5|15|30|45)\s*(?:M|MIN|MINS|MINUTE|MINUTES)(?![A-Z0-9])",u)
+        t=tf.group(1)+"m" if tf else None
+        m=re.search(r"\b([A-Z0-9]{1,12}(?:USDT|USD|USDC)\.P)\b",u)
+        if m: return m.group(1),t
+        if re.search(r"\bXAU\s*/?\s*USD\b|\bXAUUSD\b",u): return "XAU/USD",t
+        m=re.search(r"\b([A-Z]{2,10})\s*/\s*([A-Z]{2,10})\b",u)
+        return (f"{m.group(1)}/{m.group(2)}",t) if m else (None,None)
 
     def close(self):
         try:
-            if self._pw:
-                self._pw.stop()
+            if self._pw: self._pw.stop()
         finally:
-            self._pw = None
-            self._browser = None
-            self.page = None
+            self._pw=None; self._browser=None; self.page=None
