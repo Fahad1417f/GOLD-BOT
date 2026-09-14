@@ -12,6 +12,19 @@ INTERVAL_SECONDS = max(3.0, float(os.getenv("GOLDBOT_VISION_INTERVAL_SECONDS", "
 OUTPUT_DIR = os.getenv("GOLDBOT_VISION_OUTPUT_DIR", "artifacts/vision")
 
 
+def _relay_output(pipe, stream_name: str) -> None:
+    try:
+        for line in iter(pipe.readline, ""):
+            if not line:
+                break
+            print(f"CHILD_{stream_name}={line.rstrip()}", flush=True)
+    finally:
+        try:
+            pipe.close()
+        except Exception:
+            pass
+
+
 def run_cycle(cycle: int) -> None:
     print(json.dumps({"cycle": cycle, "phase": "START", "execution": "OFF"}, ensure_ascii=False), flush=True)
     env = os.environ.copy()
@@ -21,22 +34,34 @@ def run_cycle(cycle: int) -> None:
     cmd = [sys.executable, "-u", "-m", MODULE, "--output-dir", OUTPUT_DIR]
     started = time.monotonic()
     try:
-        completed = subprocess.run(
+        proc = subprocess.Popen(
             cmd,
             env=env,
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
-            timeout=TIMEOUT_SECONDS,
+            bufsize=1,
         )
+        import threading
+        stdout_thread = threading.Thread(target=_relay_output, args=(proc.stdout, "STDOUT"), daemon=True)
+        stderr_thread = threading.Thread(target=_relay_output, args=(proc.stderr, "STDERR"), daemon=True)
+        stdout_thread.start()
+        stderr_thread.start()
+        try:
+            returncode = proc.wait(timeout=TIMEOUT_SECONDS)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            try:
+                proc.wait(timeout=2)
+            except Exception:
+                pass
+            elapsed = round(time.monotonic() - started, 2)
+            print(json.dumps({"cycle": cycle, "phase": "TIMEOUT", "timeout_seconds": TIMEOUT_SECONDS, "elapsed_seconds": elapsed, "reason": "VISION_CYCLE_TIMEOUT", "execution": "OFF"}, ensure_ascii=False), flush=True)
+            return
+        stdout_thread.join(timeout=1)
+        stderr_thread.join(timeout=1)
         elapsed = round(time.monotonic() - started, 2)
-        if completed.stdout:
-            print(completed.stdout.rstrip(), flush=True)
-        if completed.stderr:
-            print(completed.stderr.rstrip(), flush=True)
-        print(json.dumps({"cycle": cycle, "phase": "END", "returncode": completed.returncode, "elapsed_seconds": elapsed, "execution": "OFF"}, ensure_ascii=False), flush=True)
-    except subprocess.TimeoutExpired:
-        elapsed = round(time.monotonic() - started, 2)
-        print(json.dumps({"cycle": cycle, "phase": "TIMEOUT", "timeout_seconds": TIMEOUT_SECONDS, "elapsed_seconds": elapsed, "reason": "VISION_CYCLE_TIMEOUT", "execution": "OFF"}, ensure_ascii=False), flush=True)
+        print(json.dumps({"cycle": cycle, "phase": "END", "returncode": returncode, "elapsed_seconds": elapsed, "execution": "OFF"}, ensure_ascii=False), flush=True)
     except Exception as exc:
         print(json.dumps({"cycle": cycle, "phase": "ERROR", "reason": f"WATCHDOG_ERROR:{type(exc).__name__}:{exc}", "execution": "OFF"}, ensure_ascii=False), flush=True)
 
