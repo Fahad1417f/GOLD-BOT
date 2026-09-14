@@ -6,7 +6,7 @@ import subprocess
 import sys
 import time
 
-MODULE = "kfoo_linked_work.vision_live_capture_v3"
+MODULE = "kfoo_linked_work.vision_live_capture_v4"
 TIMEOUT_SECONDS = float(os.getenv("GOLDBOT_VISION_CYCLE_TIMEOUT", "12"))
 INTERVAL_SECONDS = max(3.0, float(os.getenv("GOLDBOT_VISION_INTERVAL_SECONDS", "15")))
 OUTPUT_DIR = os.getenv("GOLDBOT_VISION_OUTPUT_DIR", "artifacts/vision")
@@ -37,19 +37,13 @@ def run_cycle(cycle: int) -> None:
     env["GOLDBOT_REAL_TRADING"] = "OFF"
     env["GOLDBOT_DEMO_TRADING"] = "OFF"
     env["GOLDBOT_FAST_TRADE"] = "OFF"
+    env["GOLDBOT_VISION_TRACE"] = "ON"
     env["PYTHONIOENCODING"] = "utf-8"
     env["PYTHONUTF8"] = "1"
     cmd = [sys.executable, "-u", "-m", MODULE, "--output-dir", OUTPUT_DIR]
     started = time.monotonic()
     try:
-        proc = subprocess.Popen(
-            cmd,
-            env=env,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=False,
-            bufsize=0,
-        )
+        proc = subprocess.Popen(cmd, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=False, bufsize=0)
         import threading
         stdout_thread = threading.Thread(target=_relay_output, args=(proc.stdout, "STDOUT"), daemon=True)
         stderr_thread = threading.Thread(target=_relay_output, args=(proc.stderr, "STDERR"), daemon=True)
