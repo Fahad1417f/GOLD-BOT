@@ -5,7 +5,10 @@ No anchors are fabricated; OHLC and execution remain fail-closed.
 """
 from __future__ import annotations
 
+import json
+import os
 import re
+import time
 
 from . import vision_live_capture_v1 as live
 from .vision_screen_reconstructor_v1 import ScaleAnchor
@@ -30,6 +33,12 @@ _ROOT_SELECTORS = (
 )
 
 
+def _trace(phase: str, **extra) -> None:
+    if os.getenv("GOLDBOT_VISION_TRACE", "OFF").upper() not in {"1", "ON", "TRUE", "YES"}:
+        return
+    print(json.dumps({"phase": phase, **extra}, ensure_ascii=False), flush=True)
+
+
 def _parse_price_number(text: str) -> float | None:
     s = (text or "").strip().translate(_PRICE_TRANSLATION)
     if not s or re.search(r"[%$€£]|USDT|USD", s, re.I):
@@ -50,7 +59,10 @@ def _parse_price_number(text: str) -> float | None:
 
 
 def _read_price_scale_anchors(reader, plot_rect, screenshot_path):
+    started = time.monotonic()
+    _trace("PRICE_SCALE_START")
     if reader.page is None or not plot_rect or not screenshot_path:
+        _trace("PRICE_SCALE_END", elapsed_seconds=round(time.monotonic()-started,3), anchor_count=0, reason="PLOT_RECT_UNAVAILABLE")
         return [], {"reason": "PLOT_RECT_UNAVAILABLE", "candidate_count": 0}
     try:
         from PIL import Image
@@ -60,7 +72,7 @@ def _read_price_scale_anchors(reader, plot_rect, screenshot_path):
         sx = sw / float(viewport["w"])
         sy = sh / float(viewport["h"])
         x0, y0, x1, y1 = map(float, plot_rect)
-
+        _trace("PRICE_SCALE_DOM_EVAL_START")
         payload = reader.page.evaluate(
             """([x0,y0,x1,y1]) => {
                 const out=[];
@@ -85,7 +97,6 @@ def _read_price_scale_anchors(reader, plot_rect, screenshot_path):
                             try { elements.push(...root.querySelectorAll(sel)); } catch(_) {}
                         }
                     } catch(_) {}
-                    const unique=[];
                     const localSeen=new Set();
                     for(const el of elements){
                         if(localSeen.has(el)) continue;
@@ -125,6 +136,7 @@ def _read_price_scale_anchors(reader, plot_rect, screenshot_path):
             }""",
             [x0 / sx, y0 / sy, x1 / sx, y1 / sy],
         )
+        _trace("PRICE_SCALE_DOM_EVAL_END", scanned=payload.get("scanned",0) if isinstance(payload,dict) else 0, truncated=bool(payload.get("truncated")) if isinstance(payload,dict) else False)
 
         raw_items = payload.get("items", []) if isinstance(payload, dict) else (payload or [])
         candidates=[]
@@ -164,8 +176,9 @@ def _read_price_scale_anchors(reader, plot_rect, screenshot_path):
                     selected.append(c)
 
         anchors=[ScaleAnchor(c["y"],c["price"]) for c in selected[:12]]
-        return anchors,{
-            "reason":"VISIBLE_SCALE_LABEL_PAIRS_FOUND" if len(anchors)>=2 else "NO_VERIFIED_SCALE_LABEL_PAIR",
+        reason="VISIBLE_SCALE_LABEL_PAIRS_FOUND" if len(anchors)>=2 else "NO_VERIFIED_SCALE_LABEL_PAIR"
+        diag={
+            "reason":reason,
             "candidate_count":len(candidates),
             "distinct_count":len(anchors),
             "scan_sides":["right","left"],
@@ -175,11 +188,97 @@ def _read_price_scale_anchors(reader, plot_rect, screenshot_path):
             "scan_truncated":bool(payload.get("truncated")) if isinstance(payload,dict) else False,
             "candidates":dedup[:40],
         }
+        _trace("PRICE_SCALE_END", elapsed_seconds=round(time.monotonic()-started,3), anchor_count=len(anchors), reason=reason)
+        return anchors,diag
     except Exception as exc:
-        return [], {"reason":f"SCALE_ANCHOR_READ_FAILED:{type(exc).__name__}:{exc}","candidate_count":0}
+        reason=f"SCALE_ANCHOR_READ_FAILED:{type(exc).__name__}:{exc}"
+        _trace("PRICE_SCALE_ERROR", elapsed_seconds=round(time.monotonic()-started,3), reason=reason)
+        return [], {"reason":reason,"candidate_count":0}
 
 
 live._read_price_scale_anchors=_read_price_scale_anchors
+
+_original_connect = live.PlaywrightChartReader.connect
+_original_capture = live.PlaywrightChartReader.capture
+_original_close = live.PlaywrightChartReader.close
+
+def _connect_traced(self,*args,**kwargs):
+    started=time.monotonic(); _trace("CONNECT_START")
+    try:
+        result=_original_connect(self,*args,**kwargs)
+        _trace("CONNECT_END", elapsed_seconds=round(time.monotonic()-started,3), connected=bool(getattr(result,"connected",False)), verified=bool(getattr(result,"verified",False)))
+        return result
+    except Exception as exc:
+        _trace("CONNECT_ERROR", elapsed_seconds=round(time.monotonic()-started,3), error=f"{type(exc).__name__}:{exc}")
+        raise
+
+def _capture_traced(self,*args,**kwargs):
+    started=time.monotonic(); _trace("SCREENSHOT_START")
+    try:
+        result=_original_capture(self,*args,**kwargs)
+        _trace("SCREENSHOT_END", elapsed_seconds=round(time.monotonic()-started,3))
+        return result
+    except Exception as exc:
+        _trace("SCREENSHOT_ERROR", elapsed_seconds=round(time.monotonic()-started,3), error=f"{type(exc).__name__}:{exc}")
+        raise
+
+def _close_traced(self,*args,**kwargs):
+    started=time.monotonic(); _trace("CLOSE_START")
+    try:
+        result=_original_close(self,*args,**kwargs)
+        _trace("CLOSE_END", elapsed_seconds=round(time.monotonic()-started,3))
+        return result
+    except Exception as exc:
+        _trace("CLOSE_ERROR", elapsed_seconds=round(time.monotonic()-started,3), error=f"{type(exc).__name__}:{exc}")
+        raise
+
+live.PlaywrightChartReader.connect=_connect_traced
+live.PlaywrightChartReader.capture=_capture_traced
+live.PlaywrightChartReader.close=_close_traced
+
+_original_detect = live._detect_with_fallbacks
+
+def _detect_traced(*args,**kwargs):
+    started=time.monotonic(); _trace("CANDLE_DETECT_START")
+    try:
+        result=_original_detect(*args,**kwargs)
+        det,_,selected=result
+        _trace("CANDLE_DETECT_END", elapsed_seconds=round(time.monotonic()-started,3), count=len(det.candles) if det else 0, selected_roi=selected)
+        return result
+    except Exception as exc:
+        _trace("CANDLE_DETECT_ERROR", elapsed_seconds=round(time.monotonic()-started,3), error=f"{type(exc).__name__}:{exc}")
+        raise
+
+live._detect_with_fallbacks=_detect_traced
+
+_original_verify = live._verify_ohlc_from_screen
+
+def _verify_traced(*args,**kwargs):
+    started=time.monotonic(); _trace("OHLC_VERIFY_START")
+    try:
+        result=_original_verify(*args,**kwargs)
+        _,anchors,diag=result
+        _trace("OHLC_VERIFY_END", elapsed_seconds=round(time.monotonic()-started,3), anchor_count=len(anchors), verified=bool(diag.get("verified")), reason=diag.get("reason"))
+        return result
+    except Exception as exc:
+        _trace("OHLC_VERIFY_ERROR", elapsed_seconds=round(time.monotonic()-started,3), error=f"{type(exc).__name__}:{exc}")
+        raise
+
+live._verify_ohlc_from_screen=_verify_traced
+
+_original_capture_once = live.capture_once
+
+def _capture_once_traced(*args,**kwargs):
+    started=time.monotonic(); _trace("CAPTURE_ONCE_START")
+    try:
+        result=_original_capture_once(*args,**kwargs)
+        _trace("CAPTURE_ONCE_END", elapsed_seconds=round(time.monotonic()-started,3), capture_verified=bool(result.get("capture_verified")), ohlc_verified=bool(result.get("ohlc_verified")))
+        return result
+    except Exception as exc:
+        _trace("CAPTURE_ONCE_ERROR", elapsed_seconds=round(time.monotonic()-started,3), error=f"{type(exc).__name__}:{exc}")
+        raise
+
+live.capture_once=_capture_once_traced
 
 if __name__=="__main__":
     raise SystemExit(live.main())
