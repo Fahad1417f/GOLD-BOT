@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import argparse
 import json
 import os
+import time
+from pathlib import Path
 
 try:
     from .playwright_chart_reader import PlaywrightChartReader
@@ -20,6 +23,14 @@ def _candle_limit() -> int:
         return 24
 
 
+def _monitor_interval() -> float:
+    raw = os.getenv("GOLDBOT_VISION_INTERVAL_SECONDS", "15").strip()
+    try:
+        return max(3.0, min(300.0, float(raw)))
+    except ValueError:
+        return 15.0
+
+
 def _limit_recent_candles(candles):
     """Keep only the most recent x-ordered candidates for live monitoring."""
     limit = _candle_limit()
@@ -30,7 +41,6 @@ def _limit_recent_candles(candles):
 def _build_vision_gate(data: dict) -> dict:
     """Combine chart identity, visual geometry, OHLC and KFOO readiness without promoting pixels to prices."""
     kfoo = data.get("kfoo") if isinstance(data.get("kfoo"), dict) else {}
-    visual = kfoo.get("visual_monitoring") if isinstance(kfoo.get("visual_monitoring"), dict) else {}
     identity_verified = bool(data.get("capture_verified"))
     geometry_verified = bool(data.get("pixel_candles_available")) and int(data.get("pixel_candle_count") or 0) >= 3
     ohlc_verified = bool(data.get("ohlc_verified"))
@@ -60,7 +70,6 @@ def _roi_from_plot(reader, screenshot_path, plot_rect):
         return DetectorConfig(max_candle_count=_candle_limit())
     try:
         from PIL import Image
-
         with Image.open(screenshot_path) as im:
             sw, sh = im.size
         viewport = reader.page.evaluate("() => ({w:innerWidth,h:innerHeight})")
@@ -84,7 +93,6 @@ def capture_once(cdp_url: str | None = None, output_dir: str = "artifacts/vision
         result = reader.connect()
         if not result.connected:
             return result.to_dict()
-
         result.screenshot_path = reader.capture("tradingview_live.png")
         data = result.to_dict()
         config = _roi_from_plot(reader, result.screenshot_path, result.plot_rect)
@@ -122,9 +130,66 @@ def capture_once(cdp_url: str | None = None, output_dir: str = "artifacts/vision
         reader.close()
 
 
+def _write_state(data: dict, output_dir: str) -> None:
+    path = Path(output_dir) / "live_state.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp.replace(path)
+
+
+def _run_loop(cdp_url: str | None, output_dir: str, interval: float) -> int:
+    """Run continuous read-only screen monitoring with automatic recovery."""
+    print("VISION_CONTINUOUS=ON")
+    print("EXECUTION=OFF")
+    print(f"INTERVAL_SECONDS={interval:g}")
+    while True:
+        try:
+            data = capture_once(cdp_url, output_dir)
+            _write_state(data, output_dir)
+            summary = {
+                "connected": data.get("connected"),
+                "verified": data.get("verified"),
+                "symbol": data.get("symbol"),
+                "timeframe": data.get("timeframe"),
+                "pixel_candles": data.get("pixel_candle_count", 0),
+                "vision_reason": (data.get("vision_gate") or {}).get("reason"),
+            }
+            print(json.dumps(summary, ensure_ascii=False), flush=True)
+        except KeyboardInterrupt:
+            print("VISION_CONTINUOUS=STOP")
+            return 0
+        except Exception as exc:
+            error = {
+                "connected": False,
+                "verified": False,
+                "capture_verified": False,
+                "vision_gate": {
+                    "identity_verified": False,
+                    "pixel_geometry_verified": False,
+                    "ohlc_verified": False,
+                    "kfoo_signal_ready": False,
+                    "monitoring_ready": False,
+                    "decision_input_ready": False,
+                    "execution_allowed": False,
+                    "reason": f"LOOP_ERROR:{type(exc).__name__}",
+                },
+                "error": str(exc),
+            }
+            _write_state(error, output_dir)
+            print(json.dumps({"error": str(exc), "execution": "OFF"}, ensure_ascii=False), flush=True)
+        time.sleep(interval)
+
+
 def main(capture_fn=None) -> int:
-    """CLI entrypoint; accepts an injectable capture function for deterministic tests."""
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--loop", action="store_true", help="continuous read-only monitoring")
+    parser.add_argument("--interval", type=float, default=_monitor_interval())
+    parser.add_argument("--output-dir", default="artifacts/vision")
+    args = parser.parse_args()
     fn = capture_once if capture_fn is None else capture_fn
+    if args.loop and capture_fn is None:
+        return _run_loop(os.getenv("TRADINGVIEW_CDP_URL"), args.output_dir, max(3.0, min(300.0, args.interval)))
     data = fn(os.getenv("TRADINGVIEW_CDP_URL"))
     print(json.dumps(data, ensure_ascii=False, indent=2))
     return 0 if data.get("capture_verified") else 2
