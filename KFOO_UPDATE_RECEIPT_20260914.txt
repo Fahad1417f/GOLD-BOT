@@ -1,0 +1,1 @@
+KFOO update receipt: visual monitoring rules integrated; 24-candle cap; execution OFF.
