@@ -1,3 +1,9 @@
+"""Read-only TradingView screenshot candle geometry detector.
+
+The detector proposes pixel geometry only. It never converts pixels to price,
+never infers OHLC, and fails closed when candle geometry is not sufficiently
+distinct from overlays, labels, or indicator panes.
+"""
 from __future__ import annotations
 
 import math
@@ -33,6 +39,7 @@ class DetectorConfig:
     series_gap_upper_ratio: float = 1.35
     body_width_tolerance: float = 1.45
     max_candle_count: int = 24
+    max_row_gap: int = 1
 
 
 @dataclass(frozen=True)
@@ -117,16 +124,15 @@ def _row_runs(pix, left, top, right, bottom, min_width, max_width):
     return rows
 
 
-def _extract_body_groups(rows, min_overlap):
-    active = []
+def _extract_body_groups(rows, min_overlap, max_row_gap=1):
+    """Group body strips while tolerating a one-pixel gridline crossing a body."""
     groups = []
     for y in sorted(rows):
-        new_active = []
         for start, end, kind in rows[y]:
             best = None
             best_overlap = 0.0
-            for group in active:
-                if group["last_y"] != y - 1 or group["kind"] != kind:
+            for group in groups:
+                if group["kind"] != kind or y - group["last_y"] > max_row_gap + 1:
                     continue
                 gs, ge = group["last_span"]
                 intersection = max(0, min(end, ge) - max(start, gs) + 1)
@@ -142,10 +148,7 @@ def _extract_body_groups(rows, min_overlap):
                 best["x0"] = min(best["x0"], start)
                 best["x1"] = max(best["x1"], end)
             else:
-                new_active.append({"last_y": y, "last_span": (start, end), "ys": [y], "spans": [(start, end)], "x0": start, "x1": end, "kind": kind})
-        groups.extend(group for group in active if group["last_y"] < y)
-        active = [group for group in active if group["last_y"] == y] + new_active
-    groups.extend(active)
+                groups.append({"last_y": y, "last_span": (start, end), "ys": [y], "spans": [(start, end)], "x0": start, "x1": end, "kind": kind})
     return groups
 
 
@@ -156,20 +159,20 @@ def _center_color_run(pix, center_x, high, low, kind):
 
 def _raw_candidates(pix, rows, config, top, bottom):
     candidates = []
-    for group_index, group in enumerate(_extract_body_groups(rows, config.body_span_overlap)):
+    for group_index, group in enumerate(_extract_body_groups(rows, config.body_span_overlap, config.max_row_gap)):
         body_top = min(group["ys"])
         body_bottom = max(group["ys"])
         body_height = body_bottom - body_top + 1
-        if body_height < config.min_body_height:
-            continue
-        if len(group["ys"]) < math.ceil(body_height * config.min_body_row_coverage):
+        coverage = len(group["ys"]) / max(1, body_height)
+        if body_height < config.min_body_height or coverage < config.min_body_row_coverage:
             continue
         x0, x1 = group["x0"], group["x1"]
         body_width = x1 - x0 + 1
         if not config.min_body_run_width <= body_width <= config.max_body_width:
             continue
         widths = [end - start + 1 for start, end in group["spans"]]
-        if statistics.median(widths) < config.min_body_run_width or statistics.median(widths) > config.max_body_width:
+        median_width = statistics.median(widths)
+        if not config.min_body_run_width <= median_width <= config.max_body_width:
             continue
         width_ratio = max(widths) / max(1, min(widths))
         if width_ratio > config.body_width_tolerance:
@@ -184,15 +187,13 @@ def _raw_candidates(pix, rows, config, top, bottom):
         upper_wick = body_top - high
         lower_wick = low - body_bottom
         total_height = low - high + 1
-        if total_height < config.min_total_height:
+        if total_height < config.min_total_height or max(upper_wick, lower_wick) > config.max_wick_extension:
             continue
         if max(upper_wick, lower_wick) < config.min_wick_extension and body_height < 5:
             continue
-        if max(upper_wick, lower_wick) > config.max_wick_extension:
-            continue
         polarity = group["kind"]
         open_y, close_y = ((body_bottom, body_top) if polarity == "green" else (body_top, body_bottom))
-        confidence = min(0.995, 0.76 + min(0.10, body_height / 60) + min(0.08, (upper_wick + lower_wick) / 60) + min(0.055, len(group["ys"]) / max(1, body_height) * 0.055) + min(0.03, max(0.0, 1.0 - (width_ratio - 1.0)) * 0.03))
+        confidence = min(0.995, 0.76 + min(0.10, body_height / 60) + min(0.08, (upper_wick + lower_wick) / 60) + min(0.055, coverage * 0.055) + min(0.03, max(0.0, 1.0 - (width_ratio - 1.0)) * 0.03))
         if confidence < config.min_confidence:
             continue
         candidates.append(PixelCandleCandidate(group_index, (x0 + x1) / 2, open_y, high, low, close_y, body_top, body_bottom, polarity, confidence))
@@ -240,13 +241,11 @@ def _best_series(candidates, config):
         chains.append(current)
     if not chains:
         return []
-
     def chain_score(chain):
         gaps_chain = [b.x - a.x for a, b in zip(chain, chain[1:])]
         dispersion = statistics.pstdev(gaps_chain) if len(gaps_chain) > 1 else 0.0
         alternation = sum(a.polarity != b.polarity for a, b in zip(chain, chain[1:]))
         return (len(chain), -dispersion, alternation / max(1, len(chain) - 1))
-
     best = max(chains, key=chain_score)
     median_height = statistics.median(max(1.0, c.body_bottom - c.body_top + 1) for c in best)
     filtered = [c for c in best if c.body_bottom - c.body_top + 1 <= median_height * 2.5 + 2]
@@ -267,7 +266,7 @@ def detect_candles(path: str | Path, config: DetectorConfig = DetectorConfig()) 
     raw_bottom = min(height, config.roi_bottom if config.roi_bottom is not None else height - 70)
     bottom = min(raw_bottom, _price_pane_bottom(top, raw_bottom, config.price_pane_ratio))
     roi = (left, top, right, bottom)
-    if right - left < 100 or bottom - top < 100:
+    if right - left < 100 or bottom - top < 80:
         return Detection((), False, "ROI_TOO_SMALL", roi)
     pix = image.load()
     rows = _row_runs(pix, left, top, right, bottom, config.min_body_run_width, config.max_body_width)
