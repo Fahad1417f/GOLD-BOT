@@ -1,9 +1,3 @@
-"""Read-only TradingView screenshot candle geometry detector.
-
-The detector proposes only pixel geometry. It never converts pixels to price,
-never infers OHLC, and fails closed when candle geometry is not sufficiently
-distinct from overlays, labels, or indicator panes.
-"""
 from __future__ import annotations
 
 import math
@@ -23,33 +17,22 @@ class DetectorConfig:
     roi_top: int = 75
     roi_right: int | None = None
     roi_bottom: int | None = None
-    # KFOO lower panes/oscillators commonly occupy the lower part of the
-    # TradingView canvas. Keep the price pane deliberately conservative.
-    price_pane_ratio: float = 0.55
-    price_pane_margin: int = 8
-
+    price_pane_ratio: float = 0.62
     min_body_height: int = 4
     min_body_run_width: int = 4
     max_body_width: int = 18
-    min_confidence: float = 0.72
-
+    min_confidence: float = 0.78
     min_wick_extension: int = 1
     min_total_height: int = 5
-    max_wick_extension: int = 180
-
-    min_body_row_coverage: float = 0.65
-    body_span_overlap: float = 0.60
-
-    min_series_length: int = 3
-    # Real TradingView candles are substantially farther apart than duplicate
-    # overlay fragments detected around the same x-coordinate.
-    min_series_pitch: float = 16.0
-    max_series_pitch: float = 48.0
-    x_merge_distance: float = 11.0
-    series_gap_lower_ratio: float = 0.78
-    series_gap_upper_ratio: float = 1.28
-    body_width_tolerance: float = 1.8
-    max_returned_candles: int = 24
+    max_wick_extension: int = 120
+    min_body_row_coverage: float = 0.70
+    body_span_overlap: float = 0.75
+    min_series_length: int = 5
+    max_series_gap: float = 60.0
+    series_gap_lower_ratio: float = 0.72
+    series_gap_upper_ratio: float = 1.35
+    body_width_tolerance: float = 1.45
+    max_candle_count: int = 24
 
 
 @dataclass(frozen=True)
@@ -75,11 +58,9 @@ class Detection:
 
 
 def _kind(rgb: tuple[int, int, int]) -> str | None:
-    """Return a TradingView candle color class while excluding orange/yellow overlays."""
     r, g, b = (int(v) for v in rgb)
-
-    red = r >= 140 and r - g >= 55 and r - b >= 20 and g <= 110
-    green = g >= 110 and g - r >= 45 and b >= 35
+    red = r >= 145 and r - g >= 65 and r - b >= 35 and g <= 100
+    green = g >= 120 and g - r >= 55 and g - b >= 25 and r <= 90
     if red and green:
         return "red" if r > g else "green"
     if red:
@@ -108,24 +89,15 @@ def _longest_run(values: list[int]) -> tuple[int, int] | None:
     return max(_runs(values), key=lambda item: item[1] - item[0], default=None)
 
 
-def _price_pane_bottom(top: int, bottom: int, ratio: float, margin: int) -> int:
-    ratio = min(0.90, max(0.55, float(ratio)))
-    return max(top + 40, top + int(round((bottom - top) * ratio)) - max(0, int(margin)))
+def _price_pane_bottom(top: int, bottom: int, ratio: float) -> int:
+    ratio = min(0.78, max(0.52, float(ratio)))
+    return top + int(round((bottom - top) * ratio))
 
 
-def _row_runs(
-    pix,
-    left: int,
-    top: int,
-    right: int,
-    bottom: int,
-    min_width: int,
-    max_width: int,
-) -> dict[int, list[tuple[int, int, str]]]:
-    """Collect horizontal candle-colored runs suitable for a body core."""
-    rows: dict[int, list[tuple[int, int, str]]] = {}
+def _row_runs(pix, left, top, right, bottom, min_width, max_width):
+    rows = {}
     for y in range(top, bottom):
-        current: list[tuple[int, int, str]] = []
+        current = []
         x = left
         while x < right:
             kind = _kind(pix[x, y])
@@ -145,18 +117,13 @@ def _row_runs(
     return rows
 
 
-def _extract_body_groups(
-    rows: dict[int, list[tuple[int, int, str]]],
-    min_overlap: float,
-) -> list[dict]:
-    """Group matching body strips across adjacent rows."""
-    active: list[dict] = []
-    groups: list[dict] = []
-
+def _extract_body_groups(rows, min_overlap):
+    active = []
+    groups = []
     for y in sorted(rows):
-        new_active: list[dict] = []
+        new_active = []
         for start, end, kind in rows[y]:
-            best: dict | None = None
+            best = None
             best_overlap = 0.0
             for group in active:
                 if group["last_y"] != y - 1 or group["kind"] != kind:
@@ -167,7 +134,6 @@ def _extract_body_groups(
                 if overlap > best_overlap:
                     best_overlap = overlap
                     best = group
-
             if best is not None and best_overlap >= min_overlap:
                 best["last_y"] = y
                 best["last_span"] = (start, end)
@@ -176,45 +142,20 @@ def _extract_body_groups(
                 best["x0"] = min(best["x0"], start)
                 best["x1"] = max(best["x1"], end)
             else:
-                new_active.append(
-                    {
-                        "last_y": y,
-                        "last_span": (start, end),
-                        "ys": [y],
-                        "spans": [(start, end)],
-                        "x0": start,
-                        "x1": end,
-                        "kind": kind,
-                    }
-                )
-
+                new_active.append({"last_y": y, "last_span": (start, end), "ys": [y], "spans": [(start, end)], "x0": start, "x1": end, "kind": kind})
         groups.extend(group for group in active if group["last_y"] < y)
         active = [group for group in active if group["last_y"] == y] + new_active
-
     groups.extend(active)
     return groups
 
 
-def _center_color_run(
-    pix,
-    center_x: int,
-    high: int,
-    low: int,
-    kind: str,
-) -> tuple[int, int] | None:
+def _center_color_run(pix, center_x, high, low, kind):
     values = [y for y in range(high, low + 1) if _kind(pix[center_x, y]) == kind]
     return _longest_run(values)
 
 
-def _raw_candidates(
-    pix,
-    rows: dict[int, list[tuple[int, int, str]]],
-    config: DetectorConfig,
-    top: int,
-    bottom: int,
-) -> list[PixelCandleCandidate]:
-    candidates: list[PixelCandleCandidate] = []
-
+def _raw_candidates(pix, rows, config, top, bottom):
+    candidates = []
     for group_index, group in enumerate(_extract_body_groups(rows, config.body_span_overlap)):
         body_top = min(group["ys"])
         body_bottom = max(group["ys"])
@@ -223,27 +164,23 @@ def _raw_candidates(
             continue
         if len(group["ys"]) < math.ceil(body_height * config.min_body_row_coverage):
             continue
-
         x0, x1 = group["x0"], group["x1"]
         body_width = x1 - x0 + 1
-        if not (config.min_body_run_width <= body_width <= config.max_body_width):
+        if not config.min_body_run_width <= body_width <= config.max_body_width:
             continue
-
+        widths = [end - start + 1 for start, end in group["spans"]]
+        if statistics.median(widths) < config.min_body_run_width or statistics.median(widths) > config.max_body_width:
+            continue
+        width_ratio = max(widths) / max(1, min(widths))
+        if width_ratio > config.body_width_tolerance:
+            continue
         center_x = int(round((x0 + x1) / 2))
-        center_run = _center_color_run(
-            pix,
-            center_x,
-            max(top, body_top - config.max_wick_extension),
-            min(bottom - 1, body_bottom + config.max_wick_extension),
-            group["kind"],
-        )
+        center_run = _center_color_run(pix, center_x, max(top, body_top - config.max_wick_extension), min(bottom - 1, body_bottom + config.max_wick_extension), group["kind"])
         if center_run is None:
             continue
-
         high, low = center_run
         if high > body_top or low < body_bottom:
             continue
-
         upper_wick = body_top - high
         lower_wick = low - body_bottom
         total_height = low - high + 1
@@ -253,182 +190,91 @@ def _raw_candidates(
             continue
         if max(upper_wick, lower_wick) > config.max_wick_extension:
             continue
-
-        widths = [end - start + 1 for start, end in group["spans"]]
-        if statistics.median(widths) < config.min_body_run_width:
-            continue
-
         polarity = group["kind"]
-        if polarity == "green":
-            open_y, close_y = body_bottom, body_top
-        else:
-            open_y, close_y = body_top, body_bottom
-
-        confidence = min(
-            0.99,
-            0.74
-            + min(0.10, body_height / 50)
-            + min(0.10, (upper_wick + lower_wick) / 50)
-            + min(0.05, len(group["ys"]) / max(1, body_height) * 0.05),
-        )
+        open_y, close_y = ((body_bottom, body_top) if polarity == "green" else (body_top, body_bottom))
+        confidence = min(0.995, 0.76 + min(0.10, body_height / 60) + min(0.08, (upper_wick + lower_wick) / 60) + min(0.055, len(group["ys"]) / max(1, body_height) * 0.055) + min(0.03, max(0.0, 1.0 - (width_ratio - 1.0)) * 0.03))
         if confidence < config.min_confidence:
             continue
-
-        candidates.append(
-            PixelCandleCandidate(
-                group_index,
-                (x0 + x1) / 2,
-                open_y,
-                high,
-                low,
-                close_y,
-                body_top,
-                body_bottom,
-                polarity,
-                confidence,
-            )
-        )
-
+        candidates.append(PixelCandleCandidate(group_index, (x0 + x1) / 2, open_y, high, low, close_y, body_top, body_bottom, polarity, confidence))
     return candidates
 
 
-def _merge_x_duplicates(candidates: list[PixelCandleCandidate], distance: float) -> list[PixelCandleCandidate]:
-    """Collapse multiple overlay fragments that sit on essentially the same candle x-position."""
-    if not candidates:
+def _dedupe_by_x(candidates):
+    ordered = sorted(candidates, key=lambda c: c.x)
+    if not ordered:
+        return []
+    clusters = [[ordered[0]]]
+    for candle in ordered[1:]:
+        if candle.x - clusters[-1][-1].x <= 7.0:
+            clusters[-1].append(candle)
+        else:
+            clusters.append([candle])
+    return sorted((max(cluster, key=lambda c: (c.confidence, c.body_bottom - c.body_top)) for cluster in clusters), key=lambda c: c.x)
+
+
+def _best_series(candidates, config):
+    candidates = _dedupe_by_x(candidates)
+    if len(candidates) < config.min_series_length:
         return []
     ordered = sorted(candidates, key=lambda c: c.x)
-    clusters: list[list[PixelCandleCandidate]] = [[ordered[0]]]
-    for candidate in ordered[1:]:
-        if candidate.x - clusters[-1][-1].x <= distance:
-            clusters[-1].append(candidate)
-        else:
-            clusters.append([candidate])
-    merged: list[PixelCandleCandidate] = []
-    for cluster in clusters:
-        merged.append(max(cluster, key=lambda c: (c.confidence, c.body_bottom - c.body_top, -abs(c.x - statistics.median(x.x for x in cluster)))))
-    return merged
-
-
-def _retain_series(
-    candidates: list[PixelCandleCandidate],
-    config: DetectorConfig,
-) -> list[PixelCandleCandidate]:
-    """Keep one compact, regularly spaced series and return only the newest candles."""
-    merged = _merge_x_duplicates(candidates, config.x_merge_distance)
-    if len(merged) < config.min_series_length:
-        return []
-
-    ordered = sorted(merged, key=lambda candle: candle.x)
-    gaps = [
-        ordered[i + 1].x - ordered[i].x
-        for i in range(len(ordered) - 1)
-        if config.min_series_pitch <= ordered[i + 1].x - ordered[i].x <= config.max_series_pitch
-    ]
+    gaps = [ordered[i + 1].x - ordered[i].x for i in range(len(ordered) - 1)]
+    gaps = [g for g in gaps if 0 < g <= config.max_series_gap]
     if not gaps:
         return []
-
-    # Prefer a pitch that is both frequent and central, rather than the smallest
-    # gap. This prevents duplicate KFOO/indicator fragments from becoming the pitch.
-    rounded = [round(gap) for gap in gaps]
-    histogram: dict[int, int] = {}
-    for gap in rounded:
-        histogram[gap] = histogram.get(gap, 0) + 1
     median_gap = statistics.median(gaps)
-    pitch = max(
-        histogram,
-        key=lambda p: (histogram[p], -abs(float(p) - median_gap)),
-    )
-    low = max(config.min_series_pitch, pitch * config.series_gap_lower_ratio)
-    high = min(config.max_series_pitch, pitch * config.series_gap_upper_ratio)
-
-    chains: list[list[PixelCandleCandidate]] = []
+    pitch_samples = [g for g in gaps if abs(g - median_gap) <= max(3.0, median_gap * 0.35)]
+    pitch = statistics.median(pitch_samples or gaps)
+    low = max(5.0, pitch * config.series_gap_lower_ratio)
+    high = pitch * config.series_gap_upper_ratio
+    chains = []
     current = [ordered[0]]
-    for previous, current_candidate in zip(ordered, ordered[1:]):
-        gap = current_candidate.x - previous.x
+    for prev, cur in zip(ordered, ordered[1:]):
+        gap = cur.x - prev.x
         if low <= gap <= high:
-            current.append(current_candidate)
+            current.append(cur)
         else:
             if len(current) >= config.min_series_length:
                 chains.append(current)
-            current = [current_candidate]
+            current = [cur]
     if len(current) >= config.min_series_length:
         chains.append(current)
-
     if not chains:
         return []
 
-    def chain_key(chain: list[PixelCandleCandidate]):
-        gaps_local = [chain[i + 1].x - chain[i].x for i in range(len(chain) - 1)]
-        pitch_error = statistics.median(abs(g - pitch) for g in gaps_local) if gaps_local else float("inf")
-        return (len(chain), -pitch_error, chain[-1].x)
+    def chain_score(chain):
+        gaps_chain = [b.x - a.x for a, b in zip(chain, chain[1:])]
+        dispersion = statistics.pstdev(gaps_chain) if len(gaps_chain) > 1 else 0.0
+        alternation = sum(a.polarity != b.polarity for a, b in zip(chain, chain[1:]))
+        return (len(chain), -dispersion, alternation / max(1, len(chain) - 1))
 
-    best = max(chains, key=chain_key)
-    median_height = statistics.median(
-        max(1.0, candle.body_bottom - candle.body_top + 1)
-        for candle in best
-    )
-    filtered = [
-        candle
-        for candle in best
-        if candle.body_bottom - candle.body_top + 1 <= median_height * config.body_width_tolerance + 4
-    ]
-    if len(filtered) < config.min_series_length:
-        return []
-    if len(filtered) > config.max_returned_candles:
-        filtered = filtered[-config.max_returned_candles:]
-    return sorted(filtered, key=lambda candle: candle.x)
+    best = max(chains, key=chain_score)
+    median_height = statistics.median(max(1.0, c.body_bottom - c.body_top + 1) for c in best)
+    filtered = [c for c in best if c.body_bottom - c.body_top + 1 <= median_height * 2.5 + 2]
+    return sorted(filtered[-config.max_candle_count:], key=lambda c: c.x)
 
 
-def detect_candles(
-    path: str | Path,
-    config: DetectorConfig = DetectorConfig(),
-) -> Detection:
+def detect_candles(path: str | Path, config: DetectorConfig = DetectorConfig()) -> Detection:
     if Image is None:
         return Detection((), False, "PIL_NOT_INSTALLED", None)
-
     try:
         image = Image.open(path).convert("RGB")
     except Exception as exc:
         return Detection((), False, f"IMAGE_READ_FAILED:{type(exc).__name__}", None)
-
     width, height = image.size
     left = max(0, config.roi_left)
     top = max(0, config.roi_top)
-    right = min(
-        width,
-        config.roi_right if config.roi_right is not None else width - 55,
-    )
-    raw_bottom = min(
-        height,
-        config.roi_bottom if config.roi_bottom is not None else height - 70,
-    )
-    bottom = _price_pane_bottom(top, raw_bottom, config.price_pane_ratio, config.price_pane_margin)
-
+    right = min(width, config.roi_right if config.roi_right is not None else width - 55)
+    raw_bottom = min(height, config.roi_bottom if config.roi_bottom is not None else height - 70)
+    bottom = min(raw_bottom, _price_pane_bottom(top, raw_bottom, config.price_pane_ratio))
     roi = (left, top, right, bottom)
     if right - left < 100 or bottom - top < 100:
         return Detection((), False, "ROI_TOO_SMALL", roi)
-
     pix = image.load()
-    rows = _row_runs(
-        pix,
-        left,
-        top,
-        right,
-        bottom,
-        config.min_body_run_width,
-        config.max_body_width,
-    )
+    rows = _row_runs(pix, left, top, right, bottom, config.min_body_run_width, config.max_body_width)
     if not rows:
         return Detection((), False, "NO_CANDLE_BODY_ROWS", roi)
-
     raw = _raw_candidates(pix, rows, config, top, bottom)
-    retained = _retain_series(raw, config)
+    retained = _best_series(raw, config)
     if len(retained) < config.min_series_length:
-        return Detection(
-            tuple(retained),
-            False,
-            "INSUFFICIENT_VERIFIED_CANDLE_GEOMETRY",
-            roi,
-        )
-
+        return Detection(tuple(retained), False, "INSUFFICIENT_VERIFIED_CANDLE_GEOMETRY", roi)
     return Detection(tuple(retained), True, "PIXEL_CANDLES_DETECTED", roi)
