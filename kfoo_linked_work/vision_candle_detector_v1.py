@@ -96,6 +96,22 @@ def _longest_run(values: list[int]) -> tuple[int, int] | None:
     return max(_runs(values), key=lambda item: item[1] - item[0], default=None)
 
 
+def _tolerant_run(values: list[int], max_gap: int) -> tuple[int, int] | None:
+    """Return the longest span while tolerating tiny gridline/anti-alias gaps."""
+    if not values:
+        return None
+    start = prev = values[0]
+    best = (start, start)
+    for value in values[1:]:
+        if value - prev <= max_gap + 1:
+            prev = value
+            if prev - start > best[1] - best[0]:
+                best = (start, prev)
+        else:
+            start = prev = value
+    return best
+
+
 def _price_pane_bottom(top: int, bottom: int, ratio: float) -> int:
     ratio = min(0.78, max(0.52, float(ratio)))
     return top + int(round((bottom - top) * ratio))
@@ -152,9 +168,9 @@ def _extract_body_groups(rows, min_overlap, max_row_gap=1):
     return groups
 
 
-def _center_color_run(pix, center_x, high, low, kind):
+def _center_color_run(pix, center_x, high, low, kind, max_gap=1):
     values = [y for y in range(high, low + 1) if _kind(pix[center_x, y]) == kind]
-    return _longest_run(values)
+    return _tolerant_run(values, max_gap)
 
 
 def _raw_candidates(pix, rows, config, top, bottom):
@@ -178,7 +194,7 @@ def _raw_candidates(pix, rows, config, top, bottom):
         if width_ratio > config.body_width_tolerance:
             continue
         center_x = int(round((x0 + x1) / 2))
-        center_run = _center_color_run(pix, center_x, max(top, body_top - config.max_wick_extension), min(bottom - 1, body_bottom + config.max_wick_extension), group["kind"])
+        center_run = _center_color_run(pix, center_x, max(top, body_top - config.max_wick_extension), min(bottom - 1, body_bottom + config.max_wick_extension), group["kind"], config.max_row_gap)
         if center_run is None:
             continue
         high, low = center_run
