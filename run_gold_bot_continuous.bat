@@ -2,12 +2,13 @@
 setlocal
 cd /d "%~dp0"
 
-rem Prefer the project's local virtual environment so Playwright and the
-rem other pinned dependencies are the same ones used by the test suite.
-set "PYTHON_EXE="
-if exist "%~dp0.venv\Scripts\python.exe" set "PYTHON_EXE=%~dp0.venv\Scripts\python.exe"
-if not defined PYTHON_EXE if defined PYTHON_EXE set "PYTHON_EXE=%PYTHON_EXE%"
-if not defined PYTHON_EXE set "PYTHON_EXE=python"
+rem Prefer the project's local virtual environment; otherwise honor a caller-supplied
+rem PYTHON_EXE, then fall back to python on PATH.
+if exist "%~dp0.venv\Scripts\python.exe" (
+  set "PYTHON_EXE=%~dp0.venv\Scripts\python.exe"
+) else if not defined PYTHON_EXE (
+  set "PYTHON_EXE=python"
+)
 
 set "GOLDBOT_VISION_INTERVAL_SECONDS=15"
 set "GOLDBOT_VISION_CANDLE_LIMIT=24"
@@ -37,7 +38,7 @@ if errorlevel 1 (
   echo ERROR=PLAYWRIGHT_NOT_INSTALLED
   echo Python interpreter selected: %PYTHON_EXE%
   echo Install the project dependencies with: "%PYTHON_EXE%" -m pip install -r requirements.txt
-  echo If the project uses a browser bootstrap, also run: "%PYTHON_EXE%" -m playwright install chromium
+  echo If Chromium is not installed yet, run: "%PYTHON_EXE%" -m playwright install chromium
   echo Continuous monitoring NOT started.
   pause
   exit /b 4
