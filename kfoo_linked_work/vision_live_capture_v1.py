@@ -27,6 +27,34 @@ def _limit_recent_candles(candles):
     return ordered[-limit:]
 
 
+def _build_vision_gate(data: dict) -> dict:
+    """Combine chart identity, visual geometry, OHLC and KFOO readiness without promoting pixels to prices."""
+    kfoo = data.get("kfoo") if isinstance(data.get("kfoo"), dict) else {}
+    visual = kfoo.get("visual_monitoring") if isinstance(kfoo.get("visual_monitoring"), dict) else {}
+    identity_verified = bool(data.get("capture_verified"))
+    geometry_verified = bool(data.get("pixel_candles_available")) and int(data.get("pixel_candle_count") or 0) >= 3
+    ohlc_verified = bool(data.get("ohlc_verified"))
+    kfoo_present = bool(kfoo.get("present"))
+    kfoo_signal_ready = bool(
+        kfoo_present
+        and kfoo.get("active_15m") not in (None, "", "unknown")
+        and kfoo.get("direction_15m") in ("long", "short", "bullish", "bearish")
+        and kfoo.get("table_15m") not in (None, "", "—", "-")
+    )
+    monitoring_ready = identity_verified and geometry_verified
+    decision_input_ready = identity_verified and geometry_verified and ohlc_verified and kfoo_signal_ready
+    return {
+        "identity_verified": identity_verified,
+        "pixel_geometry_verified": geometry_verified,
+        "ohlc_verified": ohlc_verified,
+        "kfoo_signal_ready": kfoo_signal_ready,
+        "monitoring_ready": monitoring_ready,
+        "decision_input_ready": decision_input_ready,
+        "execution_allowed": False,
+        "reason": "READY_FOR_MONITORING_ONLY" if monitoring_ready and not decision_input_ready else ("READY_FOR_DECISION_INPUT" if decision_input_ready else "VISION_GATE_INCOMPLETE"),
+    }
+
+
 def _roi_from_plot(reader, screenshot_path, plot_rect):
     if not plot_rect or not screenshot_path or reader.page is None:
         return DetectorConfig(max_candle_count=_candle_limit())
@@ -88,6 +116,7 @@ def capture_once(cdp_url: str | None = None, output_dir: str = "artifacts/vision
         data["capture_verified"] = bool(
             result.connected and result.symbol and result.timeframe and result.screenshot_path
         )
+        data["vision_gate"] = _build_vision_gate(data)
         return data
     finally:
         reader.close()
