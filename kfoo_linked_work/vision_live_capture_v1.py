@@ -3,15 +3,18 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import time
 from pathlib import Path
 
 try:
     from .playwright_chart_reader import PlaywrightChartReader
     from .vision_candle_detector_v1 import detect_candles, DetectorConfig
+    from .vision_screen_reconstructor_v1 import ScaleAnchor, VisionScreenReconstructorV1
 except ImportError:
     from playwright_chart_reader import PlaywrightChartReader
     from vision_candle_detector_v1 import detect_candles, DetectorConfig
+    from vision_screen_reconstructor_v1 import ScaleAnchor, VisionScreenReconstructorV1
 
 
 def _candle_limit() -> int:
@@ -85,7 +88,6 @@ def _roi_from_plot(reader, screenshot_path, plot_rect):
 
 
 def _detect_with_fallbacks(reader, screenshot_path, plot_rect):
-    """Try the chart canvas first, then conservative wider ROIs without weakening gates."""
     configs = []
     primary = _roi_from_plot(reader, screenshot_path, plot_rect)
     configs.append(("plot_rect", primary))
@@ -93,9 +95,6 @@ def _detect_with_fallbacks(reader, screenshot_path, plot_rect):
         from PIL import Image
         with Image.open(screenshot_path) as im:
             sw, sh = im.size
-        # TradingView screenshots can vary in DPR/viewport composition. A wider
-        # chart-area fallback catches valid candles when the largest canvas is
-        # not the exact price pane, while still requiring the same detector proof.
         configs.append(("wide_chart", DetectorConfig(
             roi_left=max(0, int(sw * 0.02)),
             roi_top=max(0, int(sh * 0.08)),
@@ -128,6 +127,119 @@ def _detect_with_fallbacks(reader, screenshot_path, plot_rect):
     if best is None:
         return None, attempts, None
     return best[3], attempts, best[1]
+
+
+def _parse_price_number(text: str) -> float | None:
+    s = (text or "").strip()
+    if not s:
+        return None
+    arabic = str.maketrans("٠١٢٣٤٥٦٧٨٩٬٫", "0123456789,." )
+    s = s.translate(arabic)
+    # Keep only numeric candidates; reject strings with percent/currency words.
+    if re.search(r"[%$€£]|USDT|USD", s, re.I):
+        return None
+    m = re.search(r"[-+]?\d[\d\s,]*(?:\.\d+)?", s)
+    if not m:
+        return None
+    token = m.group(0).replace(" ", "")
+    # TradingView labels may use commas as thousands separators. A final comma
+    # is treated as a decimal separator only when no decimal point is present.
+    if token.count(".") == 0 and token.count(",") == 1 and len(token.rsplit(",", 1)[1]) in (1, 2, 3):
+        left, right = token.split(",")
+        if len(left) <= 4:
+            token = left + "." + right
+        else:
+            token = left + right
+    else:
+        token = token.replace(",", "")
+    try:
+        return float(token)
+    except ValueError:
+        return None
+
+
+def _read_price_scale_anchors(reader, plot_rect, screenshot_path):
+    """Read visible numeric price-axis labels from TradingView DOM.
+
+    This is intentionally conservative: two distinct labels must be visible in
+    the chart's vertical band and near the right edge of the plot. We never use
+    arbitrary OCR or guessed prices, and failure keeps OHLC fail-closed.
+    """
+    if reader.page is None or not plot_rect:
+        return [], {"reason": "PLOT_RECT_UNAVAILABLE", "candidate_count": 0}
+    try:
+        with __import__("PIL").Image.open(screenshot_path) as im:
+            sw, sh = im.size
+        viewport = reader.page.evaluate("() => ({w:innerWidth,h:innerHeight})")
+        sx = sw / float(viewport["w"])
+        sy = sh / float(viewport["h"])
+        x0, y0, x1, y1 = map(float, plot_rect)
+        payload = reader.page.evaluate(
+            """([x0,y0,x1,y1]) => {
+                const out=[];
+                const seen=new Set();
+                for (const el of document.querySelectorAll('*')) {
+                    const r=el.getBoundingClientRect();
+                    if (!r.width || !r.height || r.bottom < y0 || r.top > y1) continue;
+                    if (r.left < x1-12 || r.left > x1+260) continue;
+                    if (r.width > 220 || r.height > 40) continue;
+                    if (el.children.length > 4) continue;
+                    const style=getComputedStyle(el);
+                    if (style.display==='none' || style.visibility==='hidden' || Number(style.opacity||1)===0) continue;
+                    const text=(el.textContent||'').trim();
+                    if (!text || text.length > 24) continue;
+                    const key=text+'|'+Math.round(r.top)+'|'+Math.round(r.left);
+                    if (seen.has(key)) continue;
+                    seen.add(key);
+                    out.push({text, x:r.left, y:(r.top+r.bottom)/2, w:r.width, h:r.height});
+                }
+                return out;
+            }""",
+            [x0 / sx, y0 / sy, x1 / sx, y1 / sy],
+        )
+        candidates=[]
+        for item in payload or []:
+            price=_parse_price_number(item.get("text", ""))
+            if price is None or not isinstance(item.get("y"), (int,float)):
+                continue
+            y=float(item["y"])*sy
+            x=float(item.get("x",0))*sx
+            if not (y0*sy <= y <= y1*sy):
+                continue
+            candidates.append({"y":round(y,2),"price":price,"text":item.get("text",""),"x":round(x,2)})
+        # Deduplicate labels at virtually the same y/price, then keep distinct y's.
+        dedup=[]
+        for c in sorted(candidates,key=lambda v:(v["y"],v["x"])):
+            if any(abs(c["y"]-d["y"])<=2 and abs(c["price"]-d["price"])<1e-9 for d in dedup):
+                continue
+            dedup.append(c)
+        distinct=[]
+        for c in dedup:
+            if not any(abs(c["y"]-d["y"])<=4 or abs(c["price"]-d["price"])<1e-9 for d in distinct):
+                distinct.append(c)
+        distinct=distinct[:12]
+        anchors=[ScaleAnchor(c["y"],c["price"]) for c in distinct]
+        return anchors, {"reason": "SCALE_LABEL_CANDIDATES" if anchors else "NO_VISIBLE_NUMERIC_SCALE_LABELS", "candidate_count": len(candidates), "distinct_count": len(distinct), "candidates": candidates[:20]}
+    except Exception as exc:
+        return [], {"reason": f"SCALE_ANCHOR_READ_FAILED:{type(exc).__name__}:{exc}", "candidate_count": 0}
+
+
+def _verify_ohlc_from_screen(reader, screenshot_path, plot_rect, monitored):
+    if not monitored:
+        return [], [], {"reason": "NO_PIXEL_CANDLES"}
+    anchors, diagnostics = _read_price_scale_anchors(reader, plot_rect, screenshot_path)
+    if len(anchors) < 2:
+        return [], anchors, {**diagnostics, "reason": "TWO_DISTINCT_SCALE_ANCHORS_REQUIRED"}
+    recon_candles=[]
+    for c in monitored:
+        recon_candles.append({"index":c.index,"x":c.x,"open_y":c.open_y,"high_y":c.high_y,"low_y":c.low_y,"close_y":c.close_y,"body_top":c.body_top,"body_bottom":c.body_bottom,"polarity":("bullish" if c.polarity=="green" else "bearish" if c.polarity=="red" else c.polarity),"confidence":c.confidence})
+    from .vision_screen_reconstructor_v1 import PixelCandle if __package__ else (None)
+    try:
+        from .vision_screen_reconstructor_v1 import PixelCandle
+    except ImportError:
+        from vision_screen_reconstructor_v1 import PixelCandle
+    result = VisionScreenReconstructorV1().map_ohlc([PixelCandle(**c) for c in recon_candles], anchors)
+    return list(result.ohlc), anchors, {**diagnostics, "reason": result.reason, "verified": result.verified}
 
 
 def capture_once(cdp_url: str | None = None, output_dir: str = "artifacts/vision") -> dict:
@@ -172,8 +284,12 @@ def capture_once(cdp_url: str | None = None, output_dir: str = "artifacts/vision
             }
             for c in monitored
         ]
-        data["ohlc_verified"] = False
-        data["ohlc_reason"] = "PRICE_SCALE_ANCHORS_NOT_VERIFIED"
+        ohlc, anchors, anchor_diag = _verify_ohlc_from_screen(reader, result.screenshot_path, result.plot_rect, monitored)
+        data["scale_anchors"] = [{"y":a.y,"price":a.price} for a in anchors]
+        data["scale_anchor_diagnostics"] = anchor_diag
+        data["ohlc"] = ohlc
+        data["ohlc_verified"] = bool(ohlc and anchor_diag.get("verified") and len(anchors) >= 2)
+        data["ohlc_reason"] = anchor_diag.get("reason", "PRICE_SCALE_ANCHORS_NOT_VERIFIED")
         data["capture_verified"] = bool(result.connected and result.symbol and result.timeframe and result.screenshot_path)
         data["vision_gate"] = _build_vision_gate(data)
         return data
@@ -215,6 +331,8 @@ def _run_loop(cdp_url: str | None, output_dir: str, interval: float) -> int:
                 "vision_reason": gate.get("reason") or data.get("reason"),
                 "pixel_candle_reason": data.get("pixel_candle_reason"),
                 "pixel_detector_selected_roi": data.get("pixel_detector_selected_roi"),
+                "ohlc_reason": data.get("ohlc_reason"),
+                "scale_anchor_count": len(data.get("scale_anchors") or []),
             }
             print(json.dumps(summary, ensure_ascii=False), flush=True)
         except KeyboardInterrupt:
