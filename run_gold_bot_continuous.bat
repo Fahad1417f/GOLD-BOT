@@ -2,26 +2,22 @@
 setlocal EnableExtensions
 cd /d "%~dp0"
 
-rem Use the project venv when present; otherwise use python from PATH.
+rem Robust Windows bootstrap: no internal goto labels and no variable assignment inside parenthesized blocks.
 set "PYTHON_EXE=python"
-if exist "%~dp0.venv\Scripts\python.exe" goto use_existing_venv
-goto bootstrap_venv
+if exist "%~dp0.venv\Scripts\python.exe" set "PYTHON_EXE=%~dp0.venv\Scripts\python.exe"
 
-:use_existing_venv
-set "PYTHON_EXE=%~dp0.venv\Scripts\python.exe"
-goto environment_ready
-
-:bootstrap_venv
 echo ========================================
 echo GOLD-BOT PYTHON ENVIRONMENT
 echo ========================================
 echo Python bootstrap source=%PYTHON_EXE%
+
+if exist "%~dp0.venv\Scripts\python.exe" goto :skip_venv_create
 "%PYTHON_EXE%" -m venv "%~dp0.venv"
-if errorlevel 1 goto venv_failed
+if errorlevel 1 echo ERROR=VENV_CREATE_FAILED & pause & exit /b 3
 set "PYTHON_EXE=%~dp0.venv\Scripts\python.exe"
 echo VENV_CREATED=%PYTHON_EXE%
 
-environment_ready:
+:skip_venv_create
 set "GOLDBOT_VISION_INTERVAL_SECONDS=15"
 set "GOLDBOT_VISION_CANDLE_LIMIT=24"
 set "GOLDBOT_REAL_TRADING=OFF"
@@ -43,29 +39,19 @@ echo READ_ONLY=YES
 echo EXECUTION=OFF
 echo.
 
-"%PYTHON_EXE%" -c "import playwright; print('PLAYWRIGHT=AVAILABLE')" >nul 2>&1
-if not errorlevel 1 goto playwright_ready
+"%PYTHON_EXE%" -c "import playwright" >nul 2>&1
+if errorlevel 1 "%PYTHON_EXE%" -m pip install -r "%~dp0requirements.txt"
+if errorlevel 1 echo ERROR=DEPENDENCY_INSTALL_FAILED & pause & exit /b 4
 
-echo PLAYWRIGHT=MISSING
-echo Installing project dependencies...
-"%PYTHON_EXE%" -m pip install -r "%~dp0requirements.txt"
-if errorlevel 1 goto dependency_failed
-
-:playwright_ready
-"%PYTHON_EXE%" -c "import playwright; print('PLAYWRIGHT=AVAILABLE')" >nul 2>&1
-if errorlevel 1 goto playwright_failed
+"%PYTHON_EXE%" -c "import playwright" >nul 2>&1
+if errorlevel 1 echo ERROR=PLAYWRIGHT_NOT_INSTALLED & pause & exit /b 5
 
 echo PLAYWRIGHT=AVAILABLE
 
 "%PYTHON_EXE%" -c "from playwright.sync_api import sync_playwright; p=sync_playwright().start(); b=p.chromium.executable_path; p.stop(); import os; raise SystemExit(0 if os.path.exists(b) else 1)" >nul 2>&1
-if not errorlevel 1 goto runtime_ready
+if errorlevel 1 "%PYTHON_EXE%" -m playwright install chromium
+if errorlevel 1 echo ERROR=CHROMIUM_INSTALL_FAILED & pause & exit /b 6
 
-echo CHROMIUM=MISSING
-echo Installing Playwright Chromium runtime...
-"%PYTHON_EXE%" -m playwright install chromium
-if errorlevel 1 goto chromium_failed
-
-:runtime_ready
 echo PLAYWRIGHT_RUNTIME=AVAILABLE
 echo.
 
@@ -77,23 +63,3 @@ echo.
 echo CONTINUOUS_MODE=STARTED
 echo Execution remains OFF.
 exit /b 0
-
-:venv_failed
-echo ERROR=VENV_CREATE_FAILED
-pause
-exit /b 3
-
-:dependency_failed
-echo ERROR=DEPENDENCY_INSTALL_FAILED
-pause
-exit /b 4
-
-:playwright_failed
-echo ERROR=PLAYWRIGHT_NOT_INSTALLED_AFTER_PIP
-pause
-exit /b 5
-
-:chromium_failed
-echo ERROR=CHROMIUM_INSTALL_FAILED
-pause
-exit /b 6
