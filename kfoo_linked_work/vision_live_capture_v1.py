@@ -84,6 +84,52 @@ def _roi_from_plot(reader, screenshot_path, plot_rect):
         return DetectorConfig(max_candle_count=_candle_limit())
 
 
+def _detect_with_fallbacks(reader, screenshot_path, plot_rect):
+    """Try the chart canvas first, then conservative wider ROIs without weakening gates."""
+    configs = []
+    primary = _roi_from_plot(reader, screenshot_path, plot_rect)
+    configs.append(("plot_rect", primary))
+    try:
+        from PIL import Image
+        with Image.open(screenshot_path) as im:
+            sw, sh = im.size
+        # TradingView screenshots can vary in DPR/viewport composition. A wider
+        # chart-area fallback catches valid candles when the largest canvas is
+        # not the exact price pane, while still requiring the same detector proof.
+        configs.append(("wide_chart", DetectorConfig(
+            roi_left=max(0, int(sw * 0.02)),
+            roi_top=max(0, int(sh * 0.08)),
+            roi_right=min(sw, int(sw * 0.98)),
+            roi_bottom=min(sh, int(sh * 0.72)),
+            max_candle_count=_candle_limit(),
+        )))
+        configs.append(("price_area", DetectorConfig(
+            roi_left=max(0, int(sw * 0.04)),
+            roi_top=max(0, int(sh * 0.05)),
+            roi_right=min(sw, int(sw * 0.90)),
+            roi_bottom=min(sh, int(sh * 0.82)),
+            price_pane_ratio=0.82,
+            max_candle_count=_candle_limit(),
+        )))
+    except Exception:
+        pass
+
+    attempts = []
+    best = None
+    for name, config in configs:
+        detection = detect_candles(screenshot_path, config)
+        count = len(detection.candles)
+        attempts.append({"name": name, "verified": detection.verified, "count": count, "reason": detection.reason, "roi": detection.roi})
+        score = (1 if detection.verified else 0, count, detection.reason == "PIXEL_CANDLES_DETECTED")
+        if best is None or score > best[0]:
+            best = (score, name, config, detection)
+        if detection.verified and count >= 3:
+            break
+    if best is None:
+        return None, attempts, None
+    return best[3], attempts, best[1]
+
+
 def capture_once(cdp_url: str | None = None, output_dir: str = "artifacts/vision") -> dict:
     reader = PlaywrightChartReader(cdp_url=cdp_url, screenshot_dir=output_dir)
     try:
@@ -92,28 +138,25 @@ def capture_once(cdp_url: str | None = None, output_dir: str = "artifacts/vision
             return result.to_dict()
         result.screenshot_path = reader.capture("tradingview_live.png")
         data = result.to_dict()
-        config = _roi_from_plot(reader, result.screenshot_path, result.plot_rect)
-        detection = detect_candles(result.screenshot_path, config)
-        monitored = _limit_recent_candles(detection.candles)
-        data["pixel_candles_available"] = bool(detection.verified and monitored)
+        detection, attempts, selected_roi = _detect_with_fallbacks(reader, result.screenshot_path, result.plot_rect)
+        if detection is None:
+            detection_reason = "NO_DETECTOR_RESULT"
+            monitored = []
+            raw_count = 0
+            pixel_roi = None
+        else:
+            monitored = _limit_recent_candles(detection.candles)
+            detection_reason = detection.reason
+            raw_count = len(detection.candles)
+            pixel_roi = detection.roi
+        data["pixel_candles_available"] = bool(detection and detection.verified and monitored)
         data["pixel_candle_count"] = len(monitored)
-        data["pixel_candle_limit"] = config.max_candle_count
-        data["pixel_candle_raw_count"] = len(detection.candles)
-        data["pixel_candle_reason"] = detection.reason
-        data["pixel_candle_roi"] = detection.roi
-        data["pixel_candle_config"] = {
-            "roi_left": config.roi_left,
-            "roi_top": config.roi_top,
-            "roi_right": config.roi_right,
-            "roi_bottom": config.roi_bottom,
-            "price_pane_ratio": config.price_pane_ratio,
-            "min_body_height": config.min_body_height,
-            "min_body_run_width": config.min_body_run_width,
-            "max_body_width": config.max_body_width,
-            "min_confidence": config.min_confidence,
-            "min_series_length": config.min_series_length,
-            "max_candle_count": config.max_candle_count,
-        }
+        data["pixel_candle_limit"] = _candle_limit()
+        data["pixel_candle_raw_count"] = raw_count
+        data["pixel_candle_reason"] = detection_reason
+        data["pixel_candle_roi"] = pixel_roi
+        data["pixel_detector_attempts"] = attempts
+        data["pixel_detector_selected_roi"] = selected_roi
         data["pixel_candles"] = [
             {
                 "index": c.index,
@@ -155,7 +198,6 @@ def _run_loop(cdp_url: str | None, output_dir: str, interval: float) -> int:
         cycle += 1
         try:
             data = capture_once(cdp_url, output_dir)
-            data["continuous_cycle"] = cycle
             _write_state(data, output_dir)
             gate = data.get("vision_gate") or {}
             summary = {
@@ -165,17 +207,14 @@ def _run_loop(cdp_url: str | None, output_dir: str, interval: float) -> int:
                 "capture_verified": data.get("capture_verified"),
                 "symbol": data.get("symbol"),
                 "timeframe": data.get("timeframe"),
-                "source": data.get("source"),
                 "kfoo_present": (data.get("kfoo") or {}).get("present"),
                 "kfoo_signal_ready": gate.get("kfoo_signal_ready"),
                 "pixel_geometry_verified": gate.get("pixel_geometry_verified"),
                 "ohlc_verified": gate.get("ohlc_verified"),
                 "pixel_candles": data.get("pixel_candle_count", 0),
-                "pixel_candle_reason": data.get("pixel_candle_reason"),
-                "pixel_candle_roi": data.get("pixel_candle_roi"),
-                "reader_reason": data.get("reason"),
                 "vision_reason": gate.get("reason") or data.get("reason"),
-                "execution": "OFF",
+                "pixel_candle_reason": data.get("pixel_candle_reason"),
+                "pixel_detector_selected_roi": data.get("pixel_detector_selected_roi"),
             }
             print(json.dumps(summary, ensure_ascii=False), flush=True)
         except KeyboardInterrupt:
@@ -197,10 +236,9 @@ def _run_loop(cdp_url: str | None, output_dir: str, interval: float) -> int:
                     "reason": f"LOOP_ERROR:{type(exc).__name__}",
                 },
                 "error": str(exc),
-                "continuous_cycle": cycle,
             }
             _write_state(error, output_dir)
-            print(json.dumps({"cycle": cycle, "error": str(exc), "execution": "OFF"}, ensure_ascii=False), flush=True)
+            print(json.dumps({"error": str(exc), "execution": "OFF"}, ensure_ascii=False), flush=True)
         time.sleep(interval)
 
 
