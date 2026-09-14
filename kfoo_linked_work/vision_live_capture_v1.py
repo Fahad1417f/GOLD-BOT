@@ -101,6 +101,19 @@ def capture_once(cdp_url: str | None = None, output_dir: str = "artifacts/vision
         data["pixel_candle_raw_count"] = len(detection.candles)
         data["pixel_candle_reason"] = detection.reason
         data["pixel_candle_roi"] = detection.roi
+        data["pixel_candle_config"] = {
+            "roi_left": config.roi_left,
+            "roi_top": config.roi_top,
+            "roi_right": config.roi_right,
+            "roi_bottom": config.roi_bottom,
+            "price_pane_ratio": config.price_pane_ratio,
+            "min_body_height": config.min_body_height,
+            "min_body_run_width": config.min_body_run_width,
+            "max_body_width": config.max_body_width,
+            "min_confidence": config.min_confidence,
+            "min_series_length": config.min_series_length,
+            "max_candle_count": config.max_candle_count,
+        }
         data["pixel_candles"] = [
             {
                 "index": c.index,
@@ -137,23 +150,32 @@ def _run_loop(cdp_url: str | None, output_dir: str, interval: float) -> int:
     print("VISION_CONTINUOUS=ON")
     print("EXECUTION=OFF")
     print(f"INTERVAL_SECONDS={interval:g}")
+    cycle = 0
     while True:
+        cycle += 1
         try:
             data = capture_once(cdp_url, output_dir)
+            data["continuous_cycle"] = cycle
             _write_state(data, output_dir)
             gate = data.get("vision_gate") or {}
             summary = {
+                "cycle": cycle,
                 "connected": data.get("connected"),
                 "verified": data.get("verified"),
                 "capture_verified": data.get("capture_verified"),
                 "symbol": data.get("symbol"),
                 "timeframe": data.get("timeframe"),
+                "source": data.get("source"),
                 "kfoo_present": (data.get("kfoo") or {}).get("present"),
                 "kfoo_signal_ready": gate.get("kfoo_signal_ready"),
                 "pixel_geometry_verified": gate.get("pixel_geometry_verified"),
                 "ohlc_verified": gate.get("ohlc_verified"),
                 "pixel_candles": data.get("pixel_candle_count", 0),
+                "pixel_candle_reason": data.get("pixel_candle_reason"),
+                "pixel_candle_roi": data.get("pixel_candle_roi"),
+                "reader_reason": data.get("reason"),
                 "vision_reason": gate.get("reason") or data.get("reason"),
+                "execution": "OFF",
             }
             print(json.dumps(summary, ensure_ascii=False), flush=True)
         except KeyboardInterrupt:
@@ -175,9 +197,10 @@ def _run_loop(cdp_url: str | None, output_dir: str, interval: float) -> int:
                     "reason": f"LOOP_ERROR:{type(exc).__name__}",
                 },
                 "error": str(exc),
+                "continuous_cycle": cycle,
             }
             _write_state(error, output_dir)
-            print(json.dumps({"error": str(exc), "execution": "OFF"}, ensure_ascii=False), flush=True)
+            print(json.dumps({"cycle": cycle, "error": str(exc), "execution": "OFF"}, ensure_ascii=False), flush=True)
         time.sleep(interval)
 
 
