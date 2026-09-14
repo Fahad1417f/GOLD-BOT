@@ -13,11 +13,17 @@ OUTPUT_DIR = os.getenv("GOLDBOT_VISION_OUTPUT_DIR", "artifacts/vision")
 
 
 def _relay_output(pipe, stream_name: str) -> None:
+    """Relay child output without trusting the Windows console encoding."""
     try:
-        for line in iter(pipe.readline, ""):
-            if not line:
+        for raw_line in iter(pipe.readline, b""):
+            if not raw_line:
                 break
-            print(f"CHILD_{stream_name}={line.rstrip()}", flush=True)
+            line = raw_line.decode("utf-8", errors="backslashreplace").rstrip("\r\n")
+            try:
+                print(f"CHILD_{stream_name}={line}", flush=True)
+            except UnicodeEncodeError:
+                safe = line.encode("ascii", errors="backslashreplace").decode("ascii")
+                print(f"CHILD_{stream_name}={safe}", flush=True)
     finally:
         try:
             pipe.close()
@@ -41,10 +47,8 @@ def run_cycle(cycle: int) -> None:
             env=env,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            text=True,
-            encoding="utf-8",
-            errors="backslashreplace",
-            bufsize=1,
+            text=False,
+            bufsize=0,
         )
         import threading
         stdout_thread = threading.Thread(target=_relay_output, args=(proc.stdout, "STDOUT"), daemon=True)
@@ -67,7 +71,7 @@ def run_cycle(cycle: int) -> None:
         elapsed = round(time.monotonic() - started, 2)
         print(json.dumps({"cycle": cycle, "phase": "END", "returncode": returncode, "elapsed_seconds": elapsed, "execution": "OFF"}, ensure_ascii=False), flush=True)
     except Exception as exc:
-        print(json.dumps({"cycle": cycle, "phase": "ERROR", "reason": f"WATCHDOG_ERROR:{type(exc).__name__}:{exc}", "execution": "OFF"}, ensure_ascii=False), flush=True)
+        print(json.dumps({"cycle": cycle, "phase": "ERROR", "reason": f"WATCHDOG_ERROR:{type(exc).__name__}:{exc}", "execution": "OFF"}, ensure_ascii=False, default=str), flush=True)
 
 
 def main() -> int:
