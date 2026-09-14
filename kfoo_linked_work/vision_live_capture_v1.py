@@ -182,15 +182,20 @@ def _run_loop(cdp_url: str | None, output_dir: str, interval: float) -> int:
 
 
 def main(capture_fn=None) -> int:
+    # Test callers inject capture_fn; do not parse pytest's argv in that mode.
+    if capture_fn is not None:
+        data = capture_fn(os.getenv("TRADINGVIEW_CDP_URL"))
+        print(json.dumps(data, ensure_ascii=False, indent=2))
+        return 0 if data.get("capture_verified") else 2
+
     parser = argparse.ArgumentParser()
     parser.add_argument("--loop", action="store_true", help="continuous read-only monitoring")
     parser.add_argument("--interval", type=float, default=_monitor_interval())
     parser.add_argument("--output-dir", default="artifacts/vision")
     args = parser.parse_args()
-    fn = capture_once if capture_fn is None else capture_fn
-    if args.loop and capture_fn is None:
+    if args.loop:
         return _run_loop(os.getenv("TRADINGVIEW_CDP_URL"), args.output_dir, max(3.0, min(300.0, args.interval)))
-    data = fn(os.getenv("TRADINGVIEW_CDP_URL"))
+    data = capture_once(os.getenv("TRADINGVIEW_CDP_URL"), args.output_dir)
     print(json.dumps(data, ensure_ascii=False, indent=2))
     return 0 if data.get("capture_verified") else 2
 
