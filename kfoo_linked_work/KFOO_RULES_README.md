@@ -1,0 +1,1 @@
+KFOO visual monitoring: continuity average, swing/lightning monitoring, risk-ratio context, and 24-candle recent window. Execution OFF.
