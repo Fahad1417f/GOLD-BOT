@@ -20,9 +20,16 @@ def _candle_limit() -> int:
         return 24
 
 
+def _limit_recent_candles(candles):
+    """Keep only the most recent x-ordered candidates for live monitoring."""
+    limit = _candle_limit()
+    ordered = sorted(candles, key=lambda candle: candle.x)
+    return ordered[-limit:]
+
+
 def _roi_from_plot(reader, screenshot_path, plot_rect):
     if not plot_rect or not screenshot_path or reader.page is None:
-        return DetectorConfig(max_returned_candles=_candle_limit())
+        return DetectorConfig(max_candle_count=_candle_limit())
     try:
         from PIL import Image
 
@@ -37,10 +44,10 @@ def _roi_from_plot(reader, screenshot_path, plot_rect):
             roi_top=max(0, round(y0 * sy)),
             roi_right=min(sw, round(x1 * sx)),
             roi_bottom=min(sh, round(y1 * sy)),
-            max_returned_candles=_candle_limit(),
+            max_candle_count=_candle_limit(),
         )
     except Exception:
-        return DetectorConfig(max_returned_candles=_candle_limit())
+        return DetectorConfig(max_candle_count=_candle_limit())
 
 
 def capture_once(cdp_url: str | None = None, output_dir: str = "artifacts/vision") -> dict:
@@ -54,9 +61,10 @@ def capture_once(cdp_url: str | None = None, output_dir: str = "artifacts/vision
         data = result.to_dict()
         config = _roi_from_plot(reader, result.screenshot_path, result.plot_rect)
         detection = detect_candles(result.screenshot_path, config)
-        data["pixel_candles_available"] = bool(detection.verified)
-        data["pixel_candle_count"] = len(detection.candles)
-        data["pixel_candle_limit"] = config.max_returned_candles
+        monitored = _limit_recent_candles(detection.candles)
+        data["pixel_candles_available"] = bool(detection.verified and monitored)
+        data["pixel_candle_count"] = len(monitored)
+        data["pixel_candle_limit"] = config.max_candle_count
         data["pixel_candle_raw_count"] = len(detection.candles)
         data["pixel_candle_reason"] = detection.reason
         data["pixel_candle_roi"] = detection.roi
@@ -73,7 +81,7 @@ def capture_once(cdp_url: str | None = None, output_dir: str = "artifacts/vision
                 "polarity": c.polarity,
                 "confidence": c.confidence,
             }
-            for c in detection.candles
+            for c in monitored
         ]
         data["ohlc_verified"] = False
         data["ohlc_reason"] = "PRICE_SCALE_ANCHORS_NOT_VERIFIED"
