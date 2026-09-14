@@ -31,6 +31,8 @@ def run_cycle(cycle: int) -> None:
     env["GOLDBOT_REAL_TRADING"] = "OFF"
     env["GOLDBOT_DEMO_TRADING"] = "OFF"
     env["GOLDBOT_FAST_TRADE"] = "OFF"
+    env["PYTHONIOENCODING"] = "utf-8"
+    env["PYTHONUTF8"] = "1"
     cmd = [sys.executable, "-u", "-m", MODULE, "--output-dir", OUTPUT_DIR]
     started = time.monotonic()
     try:
@@ -40,6 +42,8 @@ def run_cycle(cycle: int) -> None:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
+            encoding="utf-8",
+            errors="backslashreplace",
             bufsize=1,
         )
         import threading
