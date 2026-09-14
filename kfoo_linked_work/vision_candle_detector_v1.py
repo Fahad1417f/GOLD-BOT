@@ -33,7 +33,9 @@ class DetectorConfig:
     max_wick_extension: int = 120
     min_body_row_coverage: float = 0.70
     body_span_overlap: float = 0.75
-    min_series_length: int = 5
+    # Three geometrically coherent candles are sufficient to establish a
+    # minimal pixel series; stronger downstream logic still remains fail-closed.
+    min_series_length: int = 3
     max_series_gap: float = 60.0
     series_gap_lower_ratio: float = 0.72
     series_gap_upper_ratio: float = 1.35
