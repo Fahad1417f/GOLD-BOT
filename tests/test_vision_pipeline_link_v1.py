@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 from PIL import Image
@@ -111,8 +110,9 @@ def test_capture_once_keeps_ohlc_fail_closed_and_links_detector(tmp_path: Path, 
 def test_module_output_is_valid_json(monkeypatch, capsys):
     payload = {"capture_verified": False, "reason": "TRADINGVIEW_PAGE_NOT_FOUND"}
     monkeypatch.setattr(live, "capture_once", lambda *_args, **_kwargs: payload)
-    try:
-        exec(compile(Path(live.__file__).read_text(encoding="utf-8"), str(live.__file__), "exec"), {"__name__": "__main__", "os": __import__("os"), "json": json})
-    except SystemExit:
-        pass
-    assert "capture_verified" in capsys.readouterr().out
+
+    exit_code = live.main()
+
+    assert exit_code == 2
+    output = capsys.readouterr().out
+    assert "capture_verified" in output
