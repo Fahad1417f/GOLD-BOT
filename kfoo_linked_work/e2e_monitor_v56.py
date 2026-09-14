@@ -3,8 +3,8 @@ from __future__ import annotations
 """V56 end-to-end monitor harness.
 
 Stages:
-  TradingView/Playwright identity -> verified MTF OHLC -> verified MTF H&S
-  -> KFOO analysis input -> V56 Signal Engine -> local webhook.
+  TradingView/Playwright identity -> live vision capture/gate -> verified MTF OHLC
+  -> verified MTF H&S -> KFOO analysis input -> V56 Signal Engine -> local webhook.
 
 The harness is read-only and fail-closed. It never enables or executes trades.
 For a real run, provide KFOO analysis as JSON via GOLDBOT_KFOO_ANALYSIS_JSON
@@ -25,6 +25,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from playwright_chart_reader import PlaywrightChartReader  # noqa: E402
+from vision_live_capture_v1 import capture_once  # noqa: E402
 from verified_signal_integration_v56 import VerifiedSignalIntegrationV56  # noqa: E402
 from signal_engine_v56 import promote  # noqa: E402
 
@@ -101,11 +102,23 @@ def main() -> int:
     reader = PlaywrightChartReader()
     chart_obj = reader.connect()
     chart = chart_obj.to_dict()
+    reader.close()
     if not chart.get("verified") or chart.get("symbol") != "XAU/USD":
         raise RuntimeError(f"TRADINGVIEW_IDENTITY_NOT_VERIFIED: {chart}")
     if not chart.get("timeframe"):
         raise RuntimeError("TRADINGVIEW_TIMEFRAME_NOT_VERIFIED")
     print(f"E2E_TRADINGVIEW=PASS symbol={chart['symbol']} timeframe={chart['timeframe']}")
+
+    vision = capture_once(os.getenv("TRADINGVIEW_CDP_URL"))
+    gate = vision.get("vision_gate") or {}
+    if not gate.get("monitoring_ready"):
+        raise RuntimeError(f"VISION_MONITOR_NOT_READY: {gate}")
+    print(
+        "E2E_VISION=PASS "
+        f"geometry={gate.get('pixel_geometry_verified')} "
+        f"ohlc={gate.get('ohlc_verified')} "
+        f"decision_input={gate.get('decision_input_ready')}"
+    )
 
     integration = VerifiedSignalIntegrationV56(
         api_key=os.getenv("TWELVE_DATA_API_KEY") or os.getenv("TWELVEDATA_API_KEY")
@@ -153,6 +166,7 @@ def main() -> int:
         "kfoo": {"source": "upstream", "live": not args.smoke},
         "head_shoulders": hns,
         "chart_reader": chart,
+        "vision_gate": gate,
         "reasons": sig.reasons or [],
         "execution": "OFF",
     }
