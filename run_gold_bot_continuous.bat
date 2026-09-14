@@ -2,8 +2,13 @@
 setlocal
 cd /d "%~dp0"
 
-set "PYTHON_EXE=%PYTHON_EXE%"
+rem Prefer the project's local virtual environment so Playwright and the
+rem other pinned dependencies are the same ones used by the test suite.
+set "PYTHON_EXE="
+if exist "%~dp0.venv\Scripts\python.exe" set "PYTHON_EXE=%~dp0.venv\Scripts\python.exe"
+if not defined PYTHON_EXE if defined PYTHON_EXE set "PYTHON_EXE=%PYTHON_EXE%"
 if not defined PYTHON_EXE set "PYTHON_EXE=python"
+
 set "GOLDBOT_VISION_INTERVAL_SECONDS=15"
 set "GOLDBOT_VISION_CANDLE_LIMIT=24"
 set "GOLDBOT_REAL_TRADING=OFF"
@@ -17,11 +22,28 @@ if not exist "%~dp0artifacts\vision" mkdir "%~dp0artifacts\vision"
 
 echo ========================================
 echo GOLD-BOT CONTINUOUS MONITOR
- echo ========================================
+echo ========================================
+echo PYTHON=%PYTHON_EXE%
 echo VISION=ON
 echo V56_SUPERVISOR=ON
 echo READ_ONLY=YES
 echo EXECUTION=OFF
+echo.
+
+rem Fail early with the actual interpreter selected above instead of allowing
+rem the monitor to loop forever with PLAYWRIGHT_NOT_INSTALLED.
+"%PYTHON_EXE%" -c "import playwright; print('PLAYWRIGHT=AVAILABLE')" >nul 2>&1
+if errorlevel 1 (
+  echo ERROR=PLAYWRIGHT_NOT_INSTALLED
+  echo Python interpreter selected: %PYTHON_EXE%
+  echo Install the project dependencies with: "%PYTHON_EXE%" -m pip install -r requirements.txt
+  echo If the project uses a browser bootstrap, also run: "%PYTHON_EXE%" -m playwright install chromium
+  echo Continuous monitoring NOT started.
+  pause
+  exit /b 4
+)
+
+echo PLAYWRIGHT=AVAILABLE
 echo.
 
 start "GOLD-BOT VISION" cmd /k "cd /d "%~dp0" && set GOLDBOT_VISION_INTERVAL_SECONDS=%GOLDBOT_VISION_INTERVAL_SECONDS% && set GOLDBOT_VISION_CANDLE_LIMIT=%GOLDBOT_VISION_CANDLE_LIMIT% && set GOLDBOT_REAL_TRADING=OFF && set GOLDBOT_DEMO_TRADING=OFF && set GOLDBOT_FAST_TRADE=OFF && "%PYTHON_EXE%" -m kfoo_linked_work.vision_live_capture_v1 --loop --interval %GOLDBOT_VISION_INTERVAL_SECONDS% --output-dir artifacts\vision"
@@ -30,6 +52,5 @@ start "GOLD-BOT SUPERVISOR" cmd /k "cd /d "%~dp0" && set GOLDBOT_REAL_TRADING=OF
 
 echo.
 echo CONTINUOUS_MODE=STARTED
-echo Close either monitor window to stop that component.
 echo Execution remains OFF.
 endlocal
