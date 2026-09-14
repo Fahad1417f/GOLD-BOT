@@ -71,23 +71,7 @@ class PlaywrightChartReader:
             kfoo = self._parse_kfoo_state(text)
             verified = bool(symbol and timeframe)
             reason = "VERIFIED_CANDLES_READ" if candles else ("IDENTITY_VERIFIED" if verified else "IDENTITY_NOT_VERIFIED")
-            return ChartRead(
-                True,
-                verified,
-                "playwright_dom" if verified else "playwright",
-                url,
-                title,
-                symbol,
-                timeframe,
-                text,
-                None,
-                bool(candles),
-                candles,
-                reason,
-                None,
-                plot,
-                kfoo,
-            )
+            return ChartRead(True, verified, "playwright_dom" if verified else "playwright", url, title, symbol, timeframe, text, None, bool(candles), candles, reason, None, plot, kfoo)
         except Exception as exc:
             return ChartRead(reason=f"READ_FAILED:{type(exc).__name__}:{exc}")
 
@@ -135,7 +119,11 @@ class PlaywrightChartReader:
 
     @classmethod
     def _parse_kfoo_state(cls, text: str) -> dict:
-        """Parse only explicitly exposed KFOO AI text markers; never infer a trade from pixels."""
+        """Expose KFOO-labelled state and a conservative visual-monitoring profile.
+
+        Values are taken from visible text only. The profile describes what should
+        be watched; it never turns colours or unlabelled numbers into a trade.
+        """
         t = text or ""
         u = t.upper()
         present = bool("KFOO AI" in u or "KFOO WHALE" in u)
@@ -153,6 +141,21 @@ class PlaywrightChartReader:
         else:
             level = "NONE"
 
+        # KFOO visual terms visible in the supplied TradingView configuration.
+        swing_enabled = bool(re.search(r"رصد\s*سوينغ|SWING", t, re.I))
+        lightning_enabled = bool(re.search(r"رصد\s*البرق|مضاربة\s*سكالب|LIGHTNING|SCALP", t, re.I))
+        continuity_enabled = bool(re.search(r"متوسط\s*الاستمرارية|CONTINUITY", t, re.I))
+        risk_ratio_enabled = bool(re.search(r"ريسك\s*ريشيو|RISK\s*RATIO|RISK", t, re.I))
+        whale_enabled = bool(re.search(r"KFOO\s*WHALE", t, re.I))
+
+        # Numeric KFOO timeframe controls exposed by the UI, retained only as
+        # configuration metadata. We do not infer signal direction from them.
+        tf_tokens = []
+        for token in re.findall(r"(?<![A-Za-z0-9])(1|3|5|15|30|45|60|240|1440)(?![A-Za-z0-9])", t):
+            normalized = cls._normalize_timeframe(token)
+            if normalized and normalized not in tf_tokens:
+                tf_tokens.append(normalized)
+
         state = {
             "present": present,
             "active_15m": active,
@@ -164,6 +167,17 @@ class PlaywrightChartReader:
             "signal_id": signal_id,
             "trade_ready": bool(present and level == "STRONG_ENTRY" and direction in {"long", "short"}),
             "source": "visible_text_markers" if present else "none",
+            "visual_monitoring": {
+                "continuity_average": continuity_enabled,
+                "continuity_rule": "above_positive_below_negative_contact_oscillation" if continuity_enabled else "unknown",
+                "real_break_rule": "open_and_close_beyond_continuity_average" if continuity_enabled else "unknown",
+                "swing_monitoring": swing_enabled,
+                "lightning_monitoring": lightning_enabled,
+                "risk_ratio": risk_ratio_enabled,
+                "whale": whale_enabled,
+                "timeframe_controls": tf_tokens,
+                "candle_window": 24,
+            },
         }
         return state
 
@@ -181,26 +195,16 @@ class PlaywrightChartReader:
         m = re.fullmatch(r"(1|2|4|6|12)\s*(?:h|hr|hrs|hour|hours)", s, re.I)
         if m:
             return m.group(1) + "h"
-        m = re.fullmatch(r"(1|3|5|15|30|45)\s*(?:دقيقة|دقائق)", s)
-        if m:
-            return m.group(1) + "m"
         m = re.fullmatch(r"(1|2|4|6|12)\s*(?:ساعة|ساعات)", s)
         if m:
             return m.group(1) + "h"
+        m = re.fullmatch(r"(1|3|5|15|30|45)\s*(?:دقيقة|دقائق)", s)
+        if m:
+            return m.group(1) + "m"
         return {
-            "1": "1m",
-            "3": "3m",
-            "5": "5m",
-            "15": "15m",
-            "30": "30m",
-            "45": "45m",
-            "60": "1h",
-            "120": "2h",
-            "240": "4h",
-            "360": "6h",
-            "720": "12h",
-            "1d": "1d",
-            "1w": "1w",
+            "1": "1m", "3": "3m", "5": "5m", "15": "15m", "30": "30m", "45": "45m",
+            "60": "1h", "120": "2h", "240": "4h", "360": "6h", "720": "12h", "1440": "1d",
+            "1d": "1d", "1w": "1w",
         }.get(s.lower())
 
     @staticmethod
