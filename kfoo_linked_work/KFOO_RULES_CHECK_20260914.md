@@ -1,0 +1,1 @@
+KFOO visual integration check. Candle window 24. Continuity average is contextual. Execution OFF.
