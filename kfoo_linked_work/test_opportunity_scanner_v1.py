@@ -8,7 +8,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from opportunity_scanner_v1 import OpportunityScanner
+from kfoo_linked_work.opportunity_scanner_v1 import OpportunityScanner
 
 
 def candidate(**overrides):
