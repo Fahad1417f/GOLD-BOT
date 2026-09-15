@@ -152,6 +152,7 @@ def main() -> int:
         "timing": timing,
         "kfoo": {"source": "upstream", "live": not args.smoke},
         "head_shoulders": hns,
+        "market_context": sig.market_context or {},
         "chart_reader": chart,
         "reasons": sig.reasons or [],
         "execution": "OFF",
