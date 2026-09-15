@@ -65,7 +65,7 @@ def main():
             if not authorized(m): continue
             parts=(m.get("text") or "").strip().split(); cmd=parts[0] if parts else ""
             if cmd not in COMMANDS:
-                tg("sendMessage",{"chat_id":CHAT_ID,"text":"Allowed: /status /health /test /log /stop"}); continue
+                tg("sendMessage",{"chat_id":CHAT_ID,"text":"Allowed: /status /health /test /log /opportunity /stop"}); continue
             tg("sendMessage",{"chat_id":CHAT_ID,"text":response(COMMANDS[cmd])[:3900]})
         time.sleep(2)
 if __name__=="__main__": raise SystemExit(main())
