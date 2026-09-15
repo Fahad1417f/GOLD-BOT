@@ -18,5 +18,9 @@ jobs:
         run: python -m py_compile kfoo_linked_work/*.py site_server.py
       - name: H&S tests
         run: python kfoo_linked_work/test_head_shoulders_v56.py
+      - name: Market context tests
+        run: PYTHONPATH=kfoo_linked_work python -m unittest kfoo_linked_work.test_market_context_v56 kfoo_linked_work.test_signal_engine_market_context_v56
+      - name: Fast signal lane tests
+        run: PYTHONPATH=kfoo_linked_work python -m unittest kfoo_linked_work.test_fast_signal_monitor_v56
       - name: Playwright reader tests
         run: PYTHONPATH=kfoo_linked_work python kfoo_linked_work/test_playwright_chart_reader.py
