@@ -51,6 +51,16 @@ def send_message(text: str, timeout: float = 10.0) -> dict[str, Any]:
         return {"ok": False, "sent": False, "reason": f"{type(exc).__name__}:{exc}"}
 
 
+def _display_symbol(value: Any) -> str:
+    """Render perpetual crypto symbols in TradingView-style XXXUSDT.P form."""
+    symbol = str(value or "UNKNOWN").strip().upper()
+    if symbol.endswith(".P"):
+        return symbol
+    if symbol.endswith("USDT"):
+        return f"{symbol}.P"
+    return symbol
+
+
 def format_opportunity(op: Mapping[str, Any]) -> str:
     status = str(op.get("status") or "WATCH")
     direction = str(op.get("direction") or "neutral").upper()
@@ -59,7 +69,7 @@ def format_opportunity(op: Mapping[str, Any]) -> str:
     risk = op.get("risk_ratio_pct")
     lines = [
         "GOLD-BOT • Opportunity Scanner",
-        f"{arrow} {op.get('symbol', 'UNKNOWN')}",
+        f"{arrow} {_display_symbol(op.get('symbol', 'UNKNOWN'))}",
         f"Status: {status} | Score: {op.get('score', '—')}/100",
         f"Risk Ratio: {risk:.1f}%" if isinstance(risk, (int, float)) else "Risk Ratio: —",
         f"Reward/Risk: {rr:.2f}R" if isinstance(rr, (int, float)) else "Reward/Risk: —",
