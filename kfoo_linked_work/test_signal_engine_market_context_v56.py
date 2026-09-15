@@ -1,9 +1,8 @@
 from __future__ import annotations
-
+import unittest
 from signal_engine_v56 import promote
 
-
-def _frame(direction="long"):
+def frame(direction="long"):
     return {
         "samples": [{"active_kfoo": direction}] * 3,
         "active_kfoo": direction,
@@ -21,25 +20,23 @@ def _frame(direction="long"):
         },
     }
 
+class SignalEngineMarketContextTests(unittest.TestCase):
+    def test_high_risk_keeps_setup_but_holds_entry(self):
+        a = {tf: frame("long") for tf in ("4h", "1h", "15m", "5m", "3m")}
+        a["15m"]["analysis"]["risk_ratio"] = {"value_pct": 75, "status": "high", "rising": True}
+        a["15m"]["analysis"]["continuity_average"] = {"average": 0.0320, "price": 0.0322, "slope": 0.0001}
+        sig = promote(a, timing={"leader_closed": True})
+        self.assertTrue(sig.setup_ready)
+        self.assertFalse(sig.entry_ready)
+        self.assertEqual(sig.level, "STRONG_SETUP")
+        self.assertTrue(any("high-risk entry hold" in r for r in sig.reasons))
 
-def _analysis():
-    return {tf: _frame("long") for tf in ("4h", "1h", "15m", "5m", "3m")}
+    def test_extreme_risk_blocks_promotion(self):
+        a = {tf: frame("long") for tf in ("4h", "1h", "15m", "5m", "3m")}
+        a["15m"]["analysis"]["risk_ratio"] = {"value_pct": 90, "status": "extreme", "rising": True}
+        sig = promote(a, timing={"leader_closed": True})
+        self.assertEqual(sig.level, "WAIT")
+        self.assertFalse(sig.entry_ready)
 
-
-def test_high_risk_keeps_setup_but_holds_entry():
-    a = _analysis()
-    a["15m"]["analysis"]["risk_ratio"] = {"value_pct": 75, "status": "high", "rising": True}
-    a["15m"]["analysis"]["continuity_average"] = {"average": 0.0320, "price": 0.0322, "slope": 0.0001}
-    sig = promote(a, timing={"leader_closed": True})
-    assert sig.setup_ready is True
-    assert sig.entry_ready is False
-    assert sig.level == "STRONG_SETUP"
-    assert any("high-risk entry hold" in r for r in sig.reasons)
-
-
-def test_extreme_risk_blocks_promotion():
-    a = _analysis()
-    a["15m"]["analysis"]["risk_ratio"] = {"value_pct": 90, "status": "extreme", "rising": True}
-    sig = promote(a, timing={"leader_closed": True})
-    assert sig.level == "WAIT"
-    assert sig.entry_ready is False
+if __name__ == "__main__":
+    unittest.main()
