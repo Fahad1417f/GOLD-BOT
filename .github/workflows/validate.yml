@@ -17,3 +17,6 @@ jobs:
       - name: Run monitor unit tests
         working-directory: v56_signal_monitor
         run: python -m unittest discover -s . -p "test_*.py" -v
+
+      - name: Run Opportunity Scanner and Telegram tests
+        run: python -m unittest test_telegram_notifier.py kfoo_linked_work/test_opportunity_scanner_v1.py -v
