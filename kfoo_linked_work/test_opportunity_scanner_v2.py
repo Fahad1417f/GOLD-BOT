@@ -37,7 +37,7 @@ class OpportunityScannerV2Tests(unittest.TestCase):
 
     def test_selects_best_unique_tradeable(self):
         result = self.scanner.select([
-            candidate("AUSDT"),
+            candidate("AUSDT", risk_ratio_pct=35),
             candidate("BUSDT", score_boost=1),
             candidate("BADUSDT", risk_ratio_pct=80),
         ])
