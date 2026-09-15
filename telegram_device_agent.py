@@ -3,7 +3,7 @@ from pathlib import Path
 try: import requests
 except ImportError: requests=None
 
-COMMANDS={"/status":"status","/health":"health","/test":"test","/log":"log","/stop":"stop"}
+COMMANDS={"/status":"status","/health":"health","/test":"test","/log":"log","/opportunity":"opportunity","/stop":"stop"}
 PROJECT=Path(os.getenv("GOLDBOT_PROJECT_DIR",".")).resolve()
 TOKEN=os.getenv("GOLDBOT_TELEGRAM_BOT_TOKEN","").strip()
 CHAT_ID=os.getenv("GOLDBOT_TELEGRAM_CHAT_ID","").strip()
@@ -36,10 +36,20 @@ def log():
         p=PROJECT/n
         if p.exists(): return "\n".join(p.read_text(encoding="utf-8",errors="replace").splitlines()[-30:])[-6000:]
     return "NO_KNOWN_LOG_FILE"
+def opportunity():
+    p=PROJECT/"website_state.json"
+    try:
+        state=json.loads(p.read_text(encoding="utf-8"))
+        op=state.get("opportunity") or {}
+        return json.dumps(op,ensure_ascii=False,indent=2)
+    except Exception as e:
+        return json.dumps({"status":"WAIT","reason":f"{type(e).__name__}:{e}"},ensure_ascii=False)
+
 def response(a):
     if a=="health": return "HEALTH\n"+json.dumps(health(),ensure_ascii=False,indent=2)
     if a=="test": return "TEST\n"+json.dumps(test(),ensure_ascii=False,indent=2)
     if a=="log": return "LOG\n"+log()
+    if a=="opportunity": return "OPPORTUNITY\n"+opportunity()
     if a=="stop": return "STOP: agent remains local; use Ctrl+C to stop it."
     return "STATUS\n"+json.dumps(health(),ensure_ascii=False,indent=2)
 def main():
@@ -55,7 +65,7 @@ def main():
             if not authorized(m): continue
             parts=(m.get("text") or "").strip().split(); cmd=parts[0] if parts else ""
             if cmd not in COMMANDS:
-                tg("sendMessage",{"chat_id":CHAT_ID,"text":"Allowed: /status /health /test /log /stop"}); continue
+                tg("sendMessage",{"chat_id":CHAT_ID,"text":"Allowed: /status /health /test /log /opportunity /stop"}); continue
             tg("sendMessage",{"chat_id":CHAT_ID,"text":response(COMMANDS[cmd])[:3900]})
         time.sleep(2)
 if __name__=="__main__": raise SystemExit(main())

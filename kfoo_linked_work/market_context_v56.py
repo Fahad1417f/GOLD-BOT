@@ -95,7 +95,7 @@ def _risk(raw: Mapping[str, Any]) -> RiskContext:
     direction = _side(_first(nested, "direction", "bias") or
                        _first(raw, "risk_ratio_direction", "risk_direction"))
 
-    rising_value = _first(nested, "rising", "increasing") 
+    rising_value = _first(nested, "rising", "increasing")
     rising = bool(rising_value) if rising_value is not None else False
 
     arrow = str(_first(nested, "arrow", "marker", "color") or
@@ -137,7 +137,9 @@ def _liquidity(raw: Mapping[str, Any], previous: Mapping[str, Any] | None) -> Li
     if velocity is None:
         velocity = _num(_first(raw, "liquidity_velocity_usd", "liquidity_delta_usd"))
     if velocity is None and previous:
-        prev = _liquidity(previous, None)
+        # Accept both a raw analysis mapping and a frame shaped as {"analysis": {...}}.
+        previous_analysis = previous.get("analysis") if isinstance(previous.get("analysis"), Mapping) else previous
+        prev = _liquidity(previous_analysis, None)
         if net is not None and prev.net_usd is not None:
             velocity = net - prev.net_usd
 
