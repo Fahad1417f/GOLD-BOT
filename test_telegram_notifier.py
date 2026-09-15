@@ -24,7 +24,19 @@ class TelegramNotifierTests(unittest.TestCase):
             "hard_blocks": [],
         })
         self.assertIn("Execution: OFF", text)
-        self.assertIn("TESTUSDT", text)
+        self.assertIn("TESTUSDT.P", text)
+
+    def test_perpetual_suffix_is_not_duplicated(self):
+        text = format_opportunity({
+            "symbol": "BTCUSDT.P",
+            "direction": "short",
+            "status": "TRADEABLE",
+            "score": 80,
+            "risk_ratio_pct": 25,
+            "reward_risk": 2.5,
+        })
+        self.assertIn("BTCUSDT.P", text)
+        self.assertNotIn("BTCUSDT.P.P", text)
 
     def test_non_tradeable_does_not_send(self):
         with patch("telegram_notifier.send_message") as send:
