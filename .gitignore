@@ -2,8 +2,14 @@
 .env.*
 !.env.example
 __pycache__/
-*.pyc
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
 *.log
-v56_monitor.log
+*.tmp
+*.bak
+.DS_Store
+Thumbs.db
 virtual_trades.json
-website_state.tmp
+website_state.local.json
