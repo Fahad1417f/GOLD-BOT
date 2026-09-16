@@ -1,2 +1,0 @@
-GOLD-BOT backend write permission test
-STATUS=PASS
