@@ -10,9 +10,11 @@ from pathlib import Path
 try:
     from .playwright_chart_reader import PlaywrightChartReader
     from .vision_candle_detector_v1 import detect_candles, DetectorConfig
+    from .kfoo_evidence_adapter_v1 import extract_kfoo_evidence, DATA_UNAVAILABLE
 except ImportError:
     from playwright_chart_reader import PlaywrightChartReader
     from vision_candle_detector_v1 import detect_candles, DetectorConfig
+    from kfoo_evidence_adapter_v1 import extract_kfoo_evidence, DATA_UNAVAILABLE
 
 
 def _utc_now() -> str:
@@ -96,6 +98,22 @@ def _capture_with_reader(reader, output_dir: str, sequence: int) -> dict:
     data["captured_at"] = _utc_now()
     data["capture_sequence"] = sequence
     data["frame_sha256"] = _sha256(result.screenshot_path)
+
+    # Read-only visible-text evidence. Missing labels are UNREADABLE; no
+    # generic indicator is ever promoted into a KFOO observation.
+    try:
+        visible_text = reader.page.locator("body").inner_text(timeout=2000)
+        kfoo_evidence = extract_kfoo_evidence(visible_text)
+    except Exception as exc:
+        visible_text = None
+        kfoo_evidence = {
+            "status": DATA_UNAVAILABLE,
+            "source": "tradingview_visible_text",
+            "evidence": [],
+            "reason": f"VISIBLE_TEXT_READ_FAILED:{type(exc).__name__}",
+        }
+    data["visible_text_available"] = visible_text is not None
+    data["kfoo_evidence"] = kfoo_evidence
     return data
 
 
@@ -186,6 +204,7 @@ class PersistentVisionSession:
                 consecutive_failures=0,
                 frame_changed=changed,
                 frame_sha256=frame_hash,
+                kfoo_evidence=data.get("kfoo_evidence"),
                 reason=data.get("reason"),
             )
             return data
