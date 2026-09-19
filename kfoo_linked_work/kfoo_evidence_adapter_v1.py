@@ -41,13 +41,18 @@ class EvidenceItem:
 def _normalize(text: str) -> str:
     return re.sub(r"\s+", " ", text or "").strip().casefold()
 
-def _find(text: str, aliases: tuple[str, ...]) -> str | None:
+def _find_status(text: str, aliases: tuple[str, ...]) -> tuple[str, str | None]:
     normalized = _normalize(text)
+    negative_prefixes = ("no ", "not ", "absent ", "false ", "none ", "لا يوجد ", "غير موجود ")
     for alias in aliases:
         needle = _normalize(alias)
-        if needle and needle in normalized:
-            return alias
-    return None
+        if not needle or needle not in normalized:
+            continue
+        for prefix in negative_prefixes:
+            if (prefix + needle) in normalized:
+                return ABSENT, alias
+        return PRESENT, alias
+    return UNREADABLE, None
 
 def extract_kfoo_evidence(
     visible_text: str | None,
@@ -68,9 +73,11 @@ def extract_kfoo_evidence(
 
     items: list[EvidenceItem] = []
     for key, key_aliases in configured.items():
-        match = _find(text, key_aliases)
-        if match:
+        status, match = _find_status(text, key_aliases)
+        if status == PRESENT:
             items.append(EvidenceItem(key, PRESENT, match))
+        elif status == ABSENT:
+            items.append(EvidenceItem(key, ABSENT, match, reason="EXPLICIT_NEGATIVE_OBSERVATION"))
         else:
             items.append(EvidenceItem(
                 key, UNREADABLE, None,
