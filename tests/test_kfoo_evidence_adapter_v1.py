@@ -42,3 +42,8 @@ def test_generic_indicators_do_not_become_kfoo_evidence():
     assert items["liquidity_table"]["status"] == UNREADABLE
     assert items["liquidity_net_positive"]["status"] == UNREADABLE
     assert items["whales_buying"]["status"] == UNREADABLE
+
+def test_explicit_negative_observation_is_absent():
+    result = extract_kfoo_evidence("No Whales Buying")
+    items = _by_key(result)
+    assert items["whales_buying"]["status"] == ABSENT
