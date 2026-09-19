@@ -11,10 +11,12 @@ try:
     from .playwright_chart_reader import PlaywrightChartReader
     from .vision_candle_detector_v1 import detect_candles, DetectorConfig
     from .kfoo_evidence_adapter_v1 import extract_kfoo_evidence, DATA_UNAVAILABLE
+    from .kfoo_evidence_regions_v1 import capture_regions
 except ImportError:
     from playwright_chart_reader import PlaywrightChartReader
     from vision_candle_detector_v1 import detect_candles, DetectorConfig
     from kfoo_evidence_adapter_v1 import extract_kfoo_evidence, DATA_UNAVAILABLE
+    from kfoo_evidence_regions_v1 import capture_regions
 
 
 def _utc_now() -> str:
@@ -114,6 +116,10 @@ def _capture_with_reader(reader, output_dir: str, sequence: int) -> dict:
         }
     data["visible_text_available"] = visible_text is not None
     data["kfoo_evidence"] = kfoo_evidence
+    data["kfoo_region_evidence"] = capture_regions(
+        result.screenshot_path,
+        output_dir=output_dir,
+    )
     return data
 
 
