@@ -12,11 +12,13 @@ try:
     from .vision_candle_detector_v1 import detect_candles, DetectorConfig
     from .kfoo_evidence_adapter_v1 import extract_kfoo_evidence, DATA_UNAVAILABLE
     from .kfoo_evidence_regions_v1 import capture_regions
+    from .kfoo_region_config_v1 import load_regions
 except ImportError:
     from playwright_chart_reader import PlaywrightChartReader
     from vision_candle_detector_v1 import detect_candles, DetectorConfig
     from kfoo_evidence_adapter_v1 import extract_kfoo_evidence, DATA_UNAVAILABLE
     from kfoo_evidence_regions_v1 import capture_regions
+    from kfoo_region_config_v1 import load_regions
 
 
 def _utc_now() -> str:
@@ -59,7 +61,7 @@ def _roi_from_plot(reader, screenshot_path, plot_rect):
         return DetectorConfig()
 
 
-def _capture_with_reader(reader, output_dir: str, sequence: int) -> dict:
+def _capture_with_reader(reader, output_dir: str, sequence: int, kfoo_regions=()) -> dict:
     result = reader.read()
     if not result.connected:
         return result.to_dict()
@@ -153,6 +155,7 @@ class PersistentVisionSession:
         self.cdp_url = cdp_url or os.getenv("TRADINGVIEW_CDP_URL", "http://127.0.0.1:9222")
         self.output_dir = Path(output_dir)
         self.heartbeat_path = Path(heartbeat_path or self.output_dir / "vision_heartbeat.json")
+        self.kfoo_region_config = os.getenv("GOLDBOT_KFOO_REGION_CONFIG")
         self.reader: PlaywrightChartReader | None = None
         self.sequence = 0
         self.last_frame_sha256: str | None = None
@@ -189,7 +192,7 @@ class PersistentVisionSession:
 
         self.sequence += 1
         try:
-            data = _capture_with_reader(self.reader, str(self.output_dir), self.sequence)
+            data = _capture_with_reader(self.reader, str(self.output_dir), self.sequence, getattr(self, "kfoo_regions", ()))
             if not data.get("connected"):
                 return self._failure(data.get("reason", "READ_FAILED"))
 
