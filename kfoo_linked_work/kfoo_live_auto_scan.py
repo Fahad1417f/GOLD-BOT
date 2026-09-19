@@ -2,7 +2,10 @@ from __future__ import annotations
 import json, os, time
 from pathlib import Path
 from verified_chart_controller import VerifiedChartController
-from .vision_live_capture_v1 import PersistentVisionSession
+try:
+    from .vision_live_capture_v1 import PersistentVisionSession
+except ImportError:
+    from vision_live_capture_v1 import PersistentVisionSession
 
 DEFAULT_TFS=("4h","1h","15m","5m","3m")
 
