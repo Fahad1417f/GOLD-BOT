@@ -29,6 +29,8 @@ set "PYTHON_EXE=%~dp0.venv\Scripts\python.exe"
 :ENV_READY
 set "GOLDBOT_VISION_INTERVAL_SECONDS=15"
 set "GOLDBOT_VISION_CANDLE_LIMIT=24"
+set "GOLDBOT_VISION_OUTPUT_DIR=artifacts\\vision"
+set "GOLDBOT_VISION_HEARTBEAT=artifacts\\vision\\vision_heartbeat.json"
 set "GOLDBOT_REAL_TRADING=OFF"
 set "GOLDBOT_DEMO_TRADING=OFF"
 set "GOLDBOT_FAST_TRADE=OFF"
